@@ -1,0 +1,92 @@
+[project]
+name = "pyosv"
+version = "0.1.0"
+description = "Scan container images for vulnerabilities in Python. Built on OSV-Scanner."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+dependencies = [
+    "cvss>=3.6,<4",
+    "pydantic>=2.12,<3",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS :: MacOS X",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov",
+    "pytest-crap",
+    "datamodel-code-generator==0.55.0",
+]
+local = [
+    "mypy",
+    "ruff",
+    "prek",
+]
+
+[tool.datamodel-codegen]
+input = "go/response.schema.json"
+input-file-type = "jsonschema"
+output = "src/pyosv/_generated.py"
+output-model-type = "pydantic_v2.BaseModel"
+target-python-version = "3.13"
+disable-future-imports = true
+disable-timestamp = true
+use-standard-collections = true
+use-union-operator = true
+snake-case-field = true
+collapse-root-models = true
+aliases = "go/model-aliases.json"
+formatters = ["ruff-format"]
+
+[tool.pytest.ini_options]
+strict = true
+addopts = "-ra -vv --crap --cov pyosv --import-mode=importlib"
+testpaths = ["tests"]
+markers = ["integration: requires built native library and network", "native: requires built native library"]
+
+[tool.mypy]
+explicit_package_bases = true
+files = ["src/pyosv"]
+strict = true
+mypy_path = ["src", "stubs"]
+
+[tool.ruff]
+unsafe-fixes = false
+extend-include = ["README.md"]
+
+[tool.ruff.lint]
+extend-select = ["ANN", "ASYNC", "PYI", "PT", "SIM", "TID", "PERF", "TRY", "PGH003"]
+extend-ignore = ["TID252", "TRY003"]
+preview = true
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"importlib.import_module".msg = "Do not dynamically import modules. Explicitly import them at the top of the file."
+"__future__.annotations".msg = "The annotation future statement is disallowed."
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+docstring-code-format = true
+skip-magic-trailing-comma = true
+preview = true
+
+[tool.scikit-build]
+wheel.packages = ["src/pyosv"]
+wheel.py-api = "py3"
+wheel.exclude = ["**/*.h", "**/__pycache__/**"]
+sdist.include = ["go/**/*.go", "go/*.json", "go/go.mod", "go/go.sum", "src/pyosv/*.py", "src/pyosv/py.typed", "tests/**/*.py", "tests/data/*.json", "stubs/**/*.pyi", "CMakeLists.txt", "uv.lock"]
+sdist.exclude = ["src/pyosv/_lib/**", "build/**", "dist/**", ".venv/**", "src/pyosv.egg-info/**"]
+
+[build-system]
+requires = ["scikit-build-core>=1.0.3,<1.1"]
+build-backend = "scikit_build_core.build"

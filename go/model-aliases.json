@@ -1,0 +1,14 @@
+{
+  "results": "sources",
+  "experimental_config": "analysis_config",
+  "experimental_generic_findings": "generic_findings",
+  "experimental_pes": "exploitability_signals",
+  "experimental_analysis": "analysis",
+  "layer_metadata": "layers",
+  "image_origin_details": "image_origin",
+  "index": "layer_index",
+  "Adv": "advisory",
+  "Sev": "severity",
+  "VulnIdentifiers": "vulnerability_ids",
+  "MatchesAllVulns": "matches_all_vulnerabilities"
+}
