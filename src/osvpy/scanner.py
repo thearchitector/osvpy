@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         platform: str | None
 
 
-logger = logging.getLogger("pyosv")
+logger = logging.getLogger("osvpy")
 
 
 def _scan(

@@ -5,11 +5,11 @@ import pytest
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    import pyosv
+    import osvpy
 
 
 def test_aliases_merge_across_packages_and_keep_package_specific_fixes(
-    advisory_scan: "Callable[..., pyosv.ScanResult]",
+    advisory_scan: "Callable[..., osvpy.ScanResult]",
 ) -> None:
     result = advisory_scan(
         {"id": "TEST-ONE", "aliases": ["CVE-2026-0001"]},
@@ -53,7 +53,7 @@ def test_aliases_merge_across_packages_and_keep_package_specific_fixes(
     ],
 )
 def test_compact_severity_score_and_rating(
-    advisory_scan: "Callable[..., pyosv.ScanResult]",
+    advisory_scan: "Callable[..., osvpy.ScanResult]",
     vector: str,
     score: float,
     rating: str,
@@ -64,7 +64,7 @@ def test_compact_severity_score_and_rating(
 
 
 def test_missing_severity_is_unknown(
-    offline_scan: "Callable[..., pyosv.ScanResult]",
+    offline_scan: "Callable[..., osvpy.ScanResult]",
 ) -> None:
     severity = offline_scan().vulnerabilities[0].severity
     assert severity.score is None
@@ -72,7 +72,7 @@ def test_missing_severity_is_unknown(
 
 
 def test_group_reports_only_highest_severity(
-    advisory_scan: "Callable[..., pyosv.ScanResult]",
+    advisory_scan: "Callable[..., osvpy.ScanResult]",
 ) -> None:
     result = advisory_scan(
         {
@@ -114,7 +114,7 @@ def test_group_reports_only_highest_severity(
     ids=["unfixed", "earlier-fix-does-not-fix-installed-version"],
 )
 def test_compact_fix_versions(
-    advisory_scan: "Callable[..., pyosv.ScanResult]",
+    advisory_scan: "Callable[..., osvpy.ScanResult]",
     events: list[dict[str, str]],
     fixes: list[str],
 ) -> None:

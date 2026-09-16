@@ -161,7 +161,7 @@ func execute(data []byte) response {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		opts := []remote.Option{remote.WithContext(ctx), remote.WithAuth(auth), remote.WithUserAgent("pyosv/0.1.0")}
+		opts := []remote.Option{remote.WithContext(ctx), remote.WithAuth(auth), remote.WithUserAgent("osvpy/0.1.0")}
 		if platform != nil {
 			opts = append(opts, remote.WithPlatform(*platform))
 		}
@@ -182,7 +182,7 @@ func execute(data []byte) response {
 		}
 		metadata.ImageDigest = digest.String()
 		metadata.ImagePlatform = config.OS + "/" + config.Architecture
-		dir, err := os.MkdirTemp("", "pyosv-")
+		dir, err := os.MkdirTemp("", "osvpy-")
 		if err != nil {
 			return failure("scan_error", err.Error())
 		}
@@ -207,7 +207,7 @@ func execute(data []byte) response {
 		ScanLicensesAllowlist: req.AllowedLicenses,
 		ScanLicensesSummary:   req.AllowedLicenses != nil,
 		ExperimentalScannerActions: osvscanner.ExperimentalScannerActions{
-			RequestUserAgent:   "pyosv/0.1.0",
+			RequestUserAgent:   "osvpy/0.1.0",
 			TransitiveScanning: osvscanner.TransitiveScanningActions{Disabled: true},
 		},
 	}

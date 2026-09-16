@@ -1103,7 +1103,7 @@
       "type": "object"
     }
   },
-  "$id": "https://github.com/pyosv/pyosv/bridge/native-response",
+  "$id": "https://github.com/osvpy/osvpy/bridge/native-response",
   "$ref": "#/$defs/NativeResponse",
   "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

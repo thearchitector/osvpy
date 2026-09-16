@@ -8,4 +8,4 @@ __pycache__
 .coverage*
 
 dist/
-src/pyosv/_lib/
+src/osvpy/_lib/

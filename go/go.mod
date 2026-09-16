@@ -1,4 +1,4 @@
-module github.com/pyosv/pyosv/bridge
+module github.com/osvpy/osvpy/bridge
 
 go 1.27.0
 

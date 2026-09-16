@@ -1,4 +1,4 @@
-from pyosv import RegistryAuth
+from osvpy import RegistryAuth
 
 
 def test_credentials_are_excluded_from_repr() -> None:

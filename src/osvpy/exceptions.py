@@ -2,7 +2,7 @@
 
 
 class OSVError(Exception):
-    """Base error for pyosv operations."""
+    """Base error for osvpy operations."""
 
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)

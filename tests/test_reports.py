@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from pyosv import FullScanResult, Vulnerability
+from osvpy import FullScanResult, Vulnerability
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -148,6 +148,7 @@ def test_saved_full_report_preserves_nested_layer_attribution(
     finding = Vulnerability.model_validate(
         restored.vulnerabilities[0].model_dump(exclude_computed_fields=True)
     )
+    assert finding.installed.image_origin is not None
     assert finding.installed.image_origin.layer_index == 0
     assert finding.layer == "sha256:layer"
     assert finding.source.path == "var/lib/dpkg/status"

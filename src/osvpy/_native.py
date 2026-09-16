@@ -33,10 +33,10 @@ _ERRORS = {
 
 def _library_path() -> Path:
     system = platform.system()
-    names = {"Linux": "libpyosv.so", "Darwin": "libpyosv.dylib"}
+    names = {"Linux": "libosvpy.so", "Darwin": "libosvpy.dylib"}
     if system not in names:
         raise NativeLibraryError(f"No native library support for {system}")
-    return Path(str(files("pyosv") / "_lib" / names[system]))
+    return Path(str(files("osvpy") / "_lib" / names[system]))
 
 
 class NativeLibrary:
@@ -53,7 +53,7 @@ class NativeLibrary:
             self._free.restype = None
         except OSError as exc:
             raise NativeLibraryError(
-                f"Cannot load pyosv native library at {path}. Install a wheel for your "
+                f"Cannot load osvpy native library at {path}. Install a wheel for your "
                 "platform, or build the native library for a source checkout."
             ) from exc
 

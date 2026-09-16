@@ -1,23 +1,27 @@
-# pyosv
+# osvpy
 
-Container image vulnerability and license reports for Python.
+![PyPI Downloads](https://img.shields.io/pypi/dm/osvpy?style=flat)
+![Made with AI](https://img.shields.io/badge/%E2%9C%A8-Made_with_AI-8A2BE2?style=flat)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/thearchitector/osvpy/ci.yaml?style=flat)
+
+Scan container images for vulnerabilities and license incompatibilities. Built on OSV-Scanner.
 
 Requires Python 3.13+ on Linux, WSL, or macOS 13+, on x86_64 or arm64.
 
 ## Installation
 
 ```bash
-python -m pip install pyosv
+python -m pip install osvpy
 # or
-uv add pyosv
+uv add osvpy
 ```
 
 ## Quick start
 
 ```python
-import pyosv
+import osvpy
 
-result = pyosv.scan_image("ubuntu:latest")
+result = osvpy.scan_image("ubuntu:latest")
 
 for vuln in result.vulnerabilities:
     print(vuln.id, vuln.severity.score, vuln.severity.rating, vuln.packages)
@@ -32,11 +36,11 @@ for package in result.packages:
 ## Scanning images
 
 ```python
-result = pyosv.scan_image("ubuntu:latest")  # Anonymous Docker Hub access
-result = pyosv.scan_image("ghcr.io/org/project:tag")
-result = pyosv.scan_image("registry.example.com/team/app@sha256:...")
+result = osvpy.scan_image("ubuntu:latest")  # Anonymous Docker Hub access
+result = osvpy.scan_image("ghcr.io/org/project:tag")
+result = osvpy.scan_image("registry.example.com/team/app@sha256:...")
 
-result = pyosv.scan_image(
+result = osvpy.scan_image(
     "python:3.12-slim",
     all_packages=True,  # Include packages without findings
     platform="linux/arm64",  # Default: linux/amd64
@@ -51,7 +55,7 @@ Linux container images; registry tags and digests. Synchronous scans; no cancell
 
 ```python
 import os
-from pyosv import RegistryAuth, scan_image
+from osvpy import RegistryAuth, scan_image
 
 result = scan_image(
     "registry.example.com/team/app:latest",
@@ -76,7 +80,7 @@ Compact reports by default:
 | `result.licenses`        | Requested allowlist and violations, or `None` when not requested            |
 
 ```python
-result = pyosv.scan_image("ubuntu:latest")
+result = osvpy.scan_image("ubuntu:latest")
 
 report = result.model_dump()
 print(result.model_dump_json(indent=2))
@@ -101,7 +105,7 @@ fix; multiple versions may belong to different release branches.
 ### Full details
 
 ```python
-full = pyosv.scan_image("ubuntu:latest", detail="full")
+full = osvpy.scan_image("ubuntu:latest", detail="full")
 for finding in full.vulnerabilities:
     print(finding.id, finding.package, finding.installed_version, finding.fixed_version)
     print(finding.advisory, finding.source, finding.image_layer)
@@ -132,7 +136,7 @@ compact reports filter fixes against the installed version where supported.
 ### License policy
 
 ```python
-result = pyosv.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
+result = osvpy.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
 packages = {package.id: package for package in result.packages}
 for violation in result.licenses.violations:
     package = packages[violation.package]
@@ -152,8 +156,8 @@ by ecosystem. License lookup failures raise `ScanError`.
 ## Archives and offline scans
 
 ```python
-result = pyosv.scan_docker_archive("image.tar", all_packages=True)
-result = pyosv.scan_docker_archive(
+result = osvpy.scan_docker_archive("image.tar", all_packages=True)
+result = osvpy.scan_docker_archive(
     "image.tar", offline=True, database_path="/srv/osv-db"
 )
 ```
@@ -175,15 +179,15 @@ Offline mode: local archives only, no database downloads, no license checks.
 
 ## Errors
 
-All library errors derive from `pyosv.OSVError` and expose a `code`.
+All library errors derive from `osvpy.OSVError` and expose a `code`.
 Specific exceptions include `ImageNotFoundError`, `RegistryAuthenticationError`,
 `InvalidImageError`, `OfflineDatabaseError`, `ScanError`, and `NativeLibraryError`.
 
 ```python
 try:
-    result = pyosv.scan_image("ubuntu:latest")
-except pyosv.RegistryAuthenticationError:
+    result = osvpy.scan_image("ubuntu:latest")
+except osvpy.RegistryAuthenticationError:
     print("Check registry credentials and pull permissions")
-except pyosv.OSVError as error:
+except osvpy.OSVError as error:
     print(error.code, str(error))
 ```

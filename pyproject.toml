@@ -1,5 +1,5 @@
 [project]
-name = "pyosv"
+name = "osvpy"
 version = "0.1.0"
 description = "Scan container images for vulnerabilities in Python. Built on OSV-Scanner."
 readme = "README.md"
@@ -10,13 +10,17 @@ dependencies = [
     "pydantic>=2.12,<3",
 ]
 classifiers = [
-  "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.13",
-  "Programming Language :: Python :: 3.14",
-  "Typing :: Typed",
-  "Operating System :: POSIX :: Linux",
-  "Operating System :: MacOS :: MacOS X",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
 ]
 
 [dependency-groups]
@@ -35,7 +39,7 @@ local = [
 [tool.datamodel-codegen]
 input = "go/response.schema.json"
 input-file-type = "jsonschema"
-output = "src/pyosv/_generated.py"
+output = "src/osvpy/_generated.py"
 output-model-type = "pydantic_v2.BaseModel"
 target-python-version = "3.13"
 disable-future-imports = true
@@ -50,13 +54,13 @@ formatters = ["ruff-check", "ruff-format"]
 
 [tool.pytest.ini_options]
 strict = true
-addopts = "-ra -vv --crap --cov pyosv --import-mode=importlib"
+addopts = "-ra -vv --crap --cov osvpy --import-mode=importlib"
 testpaths = ["tests"]
 markers = ["integration: requires public registry and vulnerability database access"]
 
 [tool.mypy]
 explicit_package_bases = true
-files = ["src/pyosv"]
+files = ["src/osvpy", "tests"]
 strict = true
 mypy_path = ["src", "stubs"]
 
@@ -73,7 +77,7 @@ preview = true
 strict = true
 quote-annotations = true
 exempt-modules = []
-runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic.RootModel", "pyosv._generated.FullScanData", "pyosv._generated.NativeResponse"]
+runtime-evaluated-base-classes = ["pydantic.BaseModel", "pydantic.RootModel", "osvpy._generated.FullScanData", "osvpy._generated.NativeResponse"]
 runtime-evaluated-decorators = ["pydantic.computed_field"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -89,11 +93,11 @@ skip-magic-trailing-comma = true
 preview = true
 
 [tool.scikit-build]
-wheel.packages = ["src/pyosv"]
+wheel.packages = ["src/osvpy"]
 wheel.py-api = "py3"
 wheel.exclude = ["**/*.h", "**/*.pyc", "**/__pycache__/**", "**/*.dSYM/**"]
 sdist.inclusion-mode = "explicit"
-sdist.include = ["pyproject.toml", "README.md", "go/**/*.go", "go/*.json", "go/go.mod", "go/go.sum", "src/pyosv/*.py", "src/pyosv/py.typed", "stubs/**/*.pyi", "CMakeLists.txt", "uv.lock"]
+sdist.include = ["pyproject.toml", "README.md", "go/**/*.go", "go/*.json", "go/go.mod", "go/go.sum", "src/osvpy/*.py", "src/osvpy/py.typed", "stubs/**/*.pyi", "CMakeLists.txt", "uv.lock"]
 
 [build-system]
 requires = ["scikit-build-core>=1.0.3,<1.1"]

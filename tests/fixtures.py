@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from pyosv import RegistryAuth
+    from osvpy import RegistryAuth
 
 
 def _tar(files: dict[str, bytes]) -> bytes:
@@ -39,13 +39,13 @@ def make_image(directory: "Path", files: dict[str, bytes]) -> "Path":
             "type": "layers",
             "diff_ids": ["sha256:" + hashlib.sha256(layer).hexdigest()],
         },
-        "history": [{"created_by": "synthetic pyosv fixture"}],
+        "history": [{"created_by": "synthetic osvpy fixture"}],
         "config": {},
     }).encode()
     manifest = json.dumps([
         {
             "Config": "config.json",
-            "RepoTags": ["pyosv-fixture:latest"],
+            "RepoTags": ["osvpy-fixture:latest"],
             "Layers": ["layer.tar"],
         }
     ]).encode()
@@ -63,7 +63,7 @@ def make_fixture(directory: "Path") -> tuple["Path", "Path"]:
             "etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n',
             "var/lib/dpkg/status": (
                 b"Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
-                b"Version: 3.0.0-1\nDescription: synthetic pyosv test package\n\n"
+                b"Version: 3.0.0-1\nDescription: synthetic osvpy test package\n\n"
                 b"Package: unaffected\nStatus: install ok installed\nArchitecture: amd64\n"
                 b"Version: 1.0\nDescription: package without findings\n\n"
             ),
@@ -74,7 +74,7 @@ def make_fixture(directory: "Path") -> tuple["Path", "Path"]:
     ecosystem_dir.mkdir(parents=True, exist_ok=True)
     vulnerability = {
         "schema_version": "1.7.0",
-        "id": "PYOSV-TEST-0001",
+        "id": "OSVPY-TEST-0001",
         "modified": "2026-01-01T00:00:00Z",
         "published": "2026-01-01T00:00:00Z",
         "summary": "Synthetic test vulnerability; not a real advisory",
@@ -91,7 +91,7 @@ def make_fixture(directory: "Path") -> tuple["Path", "Path"]:
         ],
     }
     with zipfile.ZipFile(ecosystem_dir / "all.zip", "w") as output:
-        output.writestr("PYOSV-TEST-0001.json", json.dumps(vulnerability))
+        output.writestr("OSVPY-TEST-0001.json", json.dumps(vulnerability))
     return archive, database
 
 

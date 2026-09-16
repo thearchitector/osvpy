@@ -52,11 +52,11 @@ func offlineRequest(t *testing.T, version string) []byte {
 	}
 	var zipped bytes.Buffer
 	zw := zip.NewWriter(&zipped)
-	w, err := zw.Create("PYOSV-TEST-0001.json")
+	w, err := zw.Create("OSVPY-TEST-0001.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = w.Write([]byte(`{"id":"PYOSV-TEST-0001","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"openssl","ecosystem":"Ubuntu:24.04"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.0.0-2"}]}]}]}`)); err != nil {
+	if _, err = w.Write([]byte(`{"id":"OSVPY-TEST-0001","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"openssl","ecosystem":"Ubuntu:24.04"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.0.0-2"}]}]}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := zw.Close(); err != nil {
@@ -91,7 +91,7 @@ func TestConcurrentScansKeepInstalledVersionsSeparate(t *testing.T) {
 			if pkg.Package.Version != version {
 				t.Fatalf("installed version: got %q, want %q", pkg.Package.Version, version)
 			}
-			if pkg.Vulnerabilities[0].GetId() != "PYOSV-TEST-0001" {
+			if pkg.Vulnerabilities[0].GetId() != "OSVPY-TEST-0001" {
 				t.Fatal("expected fixture vulnerability")
 			}
 		})

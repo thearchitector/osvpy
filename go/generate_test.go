@@ -14,9 +14,9 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-// Generation is development-only: PYOSV_SCHEMA=/path go test -tags codegen -run TestGenerateSchema.
+// Generation is development-only: OSVPY_SCHEMA=/path go test -tags codegen -run TestGenerateSchema.
 func TestGenerateSchema(t *testing.T) {
-	path := os.Getenv("PYOSV_SCHEMA")
+	path := os.Getenv("OSVPY_SCHEMA")
 	if path == "" {
 		t.Skip("schema generation not requested")
 	}
