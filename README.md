@@ -4,7 +4,9 @@
 ![Made with AI](https://img.shields.io/badge/%E2%9C%A8-Made_with_AI-8A2BE2?style=flat)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/thearchitector/osvpy/ci.yaml?style=flat)
 
-Scan container images for vulnerabilities and license incompatibilities. Built on OSV-Scanner.
+Scan container images for vulnerabilities and license incompatibilities.
+
+Built with [osvscanner](https://github.com/google/osv-scanner). In-process, no external dependencies.
 
 Requires Python 3.13+ on Linux, WSL, or macOS 13+, on x86_64 or arm64.
 
