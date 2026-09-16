@@ -1,4 +1,4 @@
-"""In-process container scanning with bundled OSV-Scanner and Pydantic reports."""
+"""In-process container scanning with normalized, immutable batch reports."""
 
 from .exceptions import (
     ImageNotFoundError,
@@ -9,21 +9,34 @@ from .exceptions import (
     RegistryAuthenticationError,
     ScanError,
 )
-from .models import FullScanResult, RegistryAuth, ScanResult, Vulnerability
+from .models import (
+    AdvisorySource,
+    BatchResult,
+    Finding,
+    ImageResult,
+    Occurrence,
+    Package,
+    RegistryAuth,
+    Vulnerability,
+)
 from .scanner import scan_docker_archive, scan_image
 
 __version__ = "0.1.0"
 __all__ = [
-    "FullScanResult",
+    "AdvisorySource",
+    "BatchResult",
+    "Finding",
     "ImageNotFoundError",
+    "ImageResult",
     "InvalidImageError",
     "NativeLibraryError",
     "OSVError",
+    "Occurrence",
     "OfflineDatabaseError",
+    "Package",
     "RegistryAuth",
     "RegistryAuthenticationError",
     "ScanError",
-    "ScanResult",
     "Vulnerability",
     "scan_docker_archive",
     "scan_image",

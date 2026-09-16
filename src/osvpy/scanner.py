@@ -1,106 +1,68 @@
-"""Public synchronous API; scanners execute in the calling process."""
+"""Synchronous variadic scanning with uniform batch options."""
 
-import logging
 import os
 from typing import TYPE_CHECKING
 
 from . import _native
+from .exceptions import OfflineDatabaseError
 
 if TYPE_CHECKING:
     from collections.abc import Collection
-    from typing import Any, Literal, TypedDict, Unpack, overload
+    from typing import Any
 
-    from .models import FullScanResult, RegistryAuth, ScanResult
-
-    class _ScanOptions(TypedDict, total=False):
-        offline: bool
-        all_packages: bool
-        allowed_licenses: Collection[str] | None
-        database_path: str | os.PathLike[str] | None
-
-    class _ImageOptions(_ScanOptions, total=False):
-        auth: RegistryAuth | None
-        platform: str | None
-
-
-logger = logging.getLogger("osvpy")
+    from .models import BatchResult, RegistryAuth
 
 
 def _scan(
-    image: str,
+    inputs: tuple[str, ...],
     source: str,
     *,
     offline: bool,
     all_packages: bool,
-    detail: "Literal['compact', 'full']",
     allowed_licenses: "Collection[str] | None",
+    database_path: str | os.PathLike[str] | None,
     auth: "RegistryAuth | None" = None,
     platform: str | None = None,
-    database_path: str | os.PathLike[str] | None = None,
-) -> "ScanResult | FullScanResult":
-    if detail not in ("compact", "full"):
-        raise ValueError("detail must be compact or full")
-    request: dict[str, Any] = {
-        "image": image,
+) -> "BatchResult":
+    req: dict[str, Any] = {
         "source": source,
         "offline": offline,
         "all_packages": all_packages,
-        "detail": detail,
     }
     if allowed_licenses is not None:
-        request["allowed_licenses"] = sorted(allowed_licenses)
-    if auth is not None:
-        request["auth"] = {"username": auth.username, "password": auth.password}
-    if platform is not None:
-        request["platform"] = platform
+        req["allowed_licenses"] = sorted(set(allowed_licenses))
     if database_path is not None:
-        request["database_path"] = os.fspath(database_path)
-    envelope = _native.scan(request)
-    result = envelope.result if detail == "full" else envelope.report
-    assert result is not None
-    logger.debug("Scan completed in %s seconds", result.metadata.duration_seconds)
-    return result
-
-
-if TYPE_CHECKING:
-
-    @overload
-    def scan_image(
-        image: str,
-        *,
-        detail: Literal["compact"] = "compact",
-        **options: Unpack[_ImageOptions],
-    ) -> ScanResult: ...
-
-    @overload
-    def scan_image(
-        image: str, *, detail: Literal["full"], **options: Unpack[_ImageOptions]
-    ) -> FullScanResult: ...
+        req["database_path"] = os.fspath(database_path)
+    if auth is not None:
+        req["auth"] = {"username": auth.username, "password": auth.password}
+    if platform is not None:
+        req["platform"] = platform
+    if offline and (
+        source == "registry"
+        or not req.get("database_path")
+        or allowed_licenses is not None
+    ):
+        raise OfflineDatabaseError(
+            "Offline scans require archives, a populated database_path, and no license policy"
+        )
+    return _native.scan(inputs, req)
 
 
 def scan_image(
-    image: str,
-    *,
+    *images: str,
     offline: bool = False,
     all_packages: bool = False,
-    detail: "Literal['compact', 'full']" = "compact",
     allowed_licenses: "Collection[str] | None" = None,
     auth: "RegistryAuth | None" = None,
     platform: str | None = None,
     database_path: str | os.PathLike[str] | None = None,
-) -> "ScanResult | FullScanResult":
-    """Pull and scan a Linux image directly from an OCI registry.
-
-    Tags, digests and explicit basic registry credentials are supported. The
-    default platform follows go-containerregistry (linux/amd64). Offline calls
-    fail: use scan_docker_archive with pre-populated OSV databases instead.
-    """
+) -> "BatchResult":
+    """Scan registry images in request order; acquisition failures become failed slots."""
     return _scan(
-        image,
+        images,
         "registry",
         offline=offline,
         all_packages=all_packages,
-        detail=detail,
         allowed_licenses=allowed_licenses,
         auth=auth,
         platform=platform,
@@ -108,41 +70,20 @@ def scan_image(
     )
 
 
-if TYPE_CHECKING:
-
-    @overload
-    def scan_docker_archive(
-        path: str | os.PathLike[str],
-        *,
-        detail: Literal["compact"] = "compact",
-        **options: Unpack[_ScanOptions],
-    ) -> ScanResult: ...
-
-    @overload
-    def scan_docker_archive(
-        path: str | os.PathLike[str],
-        *,
-        detail: Literal["full"],
-        **options: Unpack[_ScanOptions],
-    ) -> FullScanResult: ...
-
-
 def scan_docker_archive(
-    path: str | os.PathLike[str],
-    *,
+    *paths: str | os.PathLike[str],
     offline: bool = False,
     all_packages: bool = False,
-    detail: "Literal['compact', 'full']" = "compact",
     allowed_licenses: "Collection[str] | None" = None,
     database_path: str | os.PathLike[str] | None = None,
-) -> "ScanResult | FullScanResult":
-    """Scan a single-image Docker save archive; never invokes Docker."""
+) -> "BatchResult":
+    """Scan individual single-image Docker-save archives; never invokes Docker."""
+    inputs = tuple(os.fspath(path) for path in paths)
     return _scan(
-        os.fspath(path),
+        inputs,
         "docker_archive",
         offline=offline,
         all_packages=all_packages,
-        detail=detail,
         allowed_licenses=allowed_licenses,
         database_path=database_path,
     )

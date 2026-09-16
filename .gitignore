@@ -9,3 +9,5 @@ __pycache__
 
 dist/
 src/osvpy/_lib/
+
+benchmarks/**/*.json

@@ -2,150 +2,82 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"reflect"
-	"slices"
-	"testing"
-
 	"github.com/google/osv-scanner/v2/pkg/models"
+	"reflect"
+	"strings"
+	"testing"
 )
 
-func TestPackageFixesPreserveMembershipAndVersionRules(t *testing.T) {
+func fixture(t testing.TB, raw string) models.VulnerabilityResults {
+	t.Helper()
+	var p models.PackageVulns
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatal(err)
+	}
+	return models.VulnerabilityResults{Results: []models.PackageSource{{Packages: []models.PackageVulns{p}}}}
+}
+
+const fixturePackage = `{"package":{"name":"example","version":"1.0","ecosystem":"PyPI"},"groups":[{"ids":["A"],"aliases":["CVE-2026-1","A"]}],"vulnerabilities":[{"id":"A","modified":"2026-01-01T00:00:00.123456789Z","affected":[{"package":{"name":"example","ecosystem":"PyPI"},"ranges":[{"type":"ECOSYSTEM","events":[{"fixed":"0.5"},{"fixed":"1.0"},{"fixed":"2.0"},{"fixed":"3.0"}]}]}]}]}`
+
+func TestFixEvidence(t *testing.T) {
 	for _, tc := range []struct {
-		name, ecosystem, affectedEcosystem, version, rangeType string
-		want                                                   []string
+		name, from, to, status string
+		want                   []string
 	}{
-		{"filtered", "PyPI", "PyPI", "1.0", "ECOSYSTEM", []string{"2.0", "3.0"}},
-		{"unknown-version", "PyPI", "PyPI", "not-a-version", "ECOSYSTEM", []string{"0.5", "1.0", "2.0", "3.0"}},
-		{"ubuntu", "Ubuntu:24.04", "Ubuntu:24.04:Pro:LTS", "1.0", "ECOSYSTEM", []string{"2.0", "3.0"}},
-		{"other-ecosystem", "PyPI", "npm", "1.0", "ECOSYSTEM", []string{}},
-		{"git", "PyPI", "PyPI", "1.0", "GIT", []string{}},
+		{"branches", "NONE", "NONE", "reported", []string{"2.0", "3.0"}},
+		{"unknown", `"version":"1.0"`, `"version":"invalid"`, "unknown", []string{"0.5", "1.0", "2.0", "3.0"}},
+		{"git", "ECOSYSTEM", "GIT", "unknown", nil},
+		{"mismatch", `"ecosystem":"PyPI"},"ranges"`, `"ecosystem":"npm"},"ranges"`, "unknown", nil},
+		{"no_fix", `"fixed"`, `"last_affected"`, "no_reported_fix", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			data := fmt.Sprintf(`{
-				"package":{"name":"example","ecosystem":%q,"version":%q},
-				"groups":[{"ids":["A","A"]},{"ids":["A","B"]},{"ids":["missing"]}],
-				"vulnerabilities":[
-					{"id":"A","affected":[{"package":{"name":"example","ecosystem":%q},
-					"ranges":[{"type":%q,"events":[{"fixed":"2.0"},{"fixed":"0.5"},{"fixed":"1.0"},{"fixed":"2.0"}]}]}]},
-					{"id":"A","affected":[{"package":{"name":"example","ecosystem":%q},
-					"ranges":[{"type":%q,"events":[{"fixed":"3.0"}]}]}]},
-					{"id":"B","affected":[{"package":{"name":"other","ecosystem":%q},
-					"ranges":[{"type":"ECOSYSTEM","events":[{"fixed":"99"}]}]}]},
-					{"id":"unmatched","affected":[{"package":{"name":"example","ecosystem":%q},
-					"ranges":[{"type":"ECOSYSTEM","events":[{"fixed":"99"}]}]}]}
-				]}`, tc.ecosystem, tc.version, tc.affectedEcosystem, tc.rangeType, tc.affectedEcosystem, tc.rangeType, tc.affectedEcosystem, tc.affectedEcosystem)
-			var pkg models.PackageVulns
-			if err := json.Unmarshal([]byte(data), &pkg); err != nil {
-				t.Fatal(err)
-			}
-			for _, groupCount := range []int{3, 1, 0} {
-				pkg.Groups = pkg.Groups[:groupCount]
-				fixes := make([][]string, groupCount)
-				packageFixes(pkg, fixes)
-				for i, got := range fixes {
-					want := tc.want
-					if i == 2 {
-						want = []string{}
-					}
-					if !reflect.DeepEqual(got, want) {
-						t.Fatalf("%d groups, group %d: got %v, want %v", groupCount, i, got, want)
-					}
-				}
+			r := fixture(t, strings.ReplaceAll(fixturePackage, tc.from, tc.to))
+			p := r.Results[0].Packages[0]
+			f := advisoryFixes(p.Package, p.Vulnerabilities[0])
+			if f.Status != tc.status || !reflect.DeepEqual(f.Versions, tc.want) {
+				t.Fatalf("got %+v", f)
 			}
 		})
 	}
 }
-
-func TestCompactDuplicatePackagesPreserveOutput(t *testing.T) {
-	req := request{AllowedLicenses: []string{"MIT"}}
-	one := compactResults(reportFixture(t, 1, 3, true), req, scanMetadata{})
-	many := compactResults(reportFixture(t, 100, 3, true), req, scanMetadata{})
-	if !reflect.DeepEqual(one, many) {
-		t.Fatal("duplicate package occurrences changed the report")
+func TestBatchAliasMerge(t *testing.T) {
+	b := newBuilder()
+	r := fixture(t, fixturePackage)
+	b.add(request{Image: "one"}, response{Result: r})
+	r.Results[0].Packages[0].Vulnerabilities[0].Details = strings.Repeat("discarded", 10000)
+	b.add(request{Image: "one"}, response{Result: r})
+	r.Results[0].Packages[0].Vulnerabilities[0].Summary = "conflicting retained summary"
+	r.Results[0].Packages[0].Vulnerabilities[0].Aliases = []string{"CVE-2026-0"}
+	b.add(request{Image: "three"}, response{Result: r})
+	b.add(request{Image: "bad"}, failure("scan_error", "fixture"))
+	out := b.finish()
+	if len(out.Images) != 4 || len(out.Vulnerabilities) != 1 || out.Vulnerabilities[0].ID != "CVE-2026-0" {
+		t.Fatal("incorrect batch images or merged vulnerability")
 	}
-	for _, v := range many.Vulnerabilities {
-		if cap(v.Packages) != len(v.Packages) {
-			t.Fatal("duplicate package edges retained excess storage")
-		}
-	}
-}
-
-func TestUniqueReleasesLargeDuplicateStorage(t *testing.T) {
-	values := make([]string, 1000)
-	for i := range values {
-		values[i] = "same"
-	}
-	got := unique(values)
-	if !slices.Equal(got, []string{"same"}) || cap(got) != 1 {
-		t.Fatalf("got %v with capacity %d", got, cap(got))
+	if *out.AdvisorySources[0].Modified != "2026-01-01T00:00:00.123456789Z" {
+		t.Fatal("lost timestamp precision")
 	}
 }
-
-func TestEmptyCompactCollectionsStayArrays(t *testing.T) {
-	r := compactResults(models.VulnerabilityResults{}, request{AllowedLicenses: []string{}}, scanMetadata{})
-	if r.Packages == nil || r.Vulnerabilities == nil || r.Licenses.Violations == nil || r.Licenses.AllowedLicenses == nil {
-		t.Fatal("empty collections must serialize as arrays")
+func TestEmptyAndAllFailed(t *testing.T) {
+	b := newBuilder()
+	r := b.finish()
+	if len(r.Images) != 0 {
+		t.Fatal("empty")
+	}
+	b = newBuilder()
+	b.add(request{Image: "bad"}, failure("scan_error", "bad"))
+	r = b.finish()
+	if r.Images[0].Status != "failed" || len(r.Findings) != 0 {
+		t.Fatal("failed")
 	}
 }
-
-// Build outside benchmark timing; each group has its own advisory and fix.
-func reportFixture(t testing.TB, packages, groups int, duplicate bool) models.VulnerabilityResults {
-	t.Helper()
-	rows := make([]any, 0, packages)
-	for p := range packages {
-		version := fmt.Sprintf("1.0.%d", p)
-		if duplicate {
-			version = "1.0.0"
-		}
-		advisories, findings := []any{}, []any{}
-		for g := range groups {
-			id := fmt.Sprintf("TEST-%04d", g)
-			findings = append(findings, map[string]any{"ids": []string{id}, "aliases": []string{id}, "max_severity": "7.5"})
-			advisories = append(advisories, map[string]any{
-				"id": id,
-				"affected": []any{map[string]any{
-					"package": map[string]any{"name": "example", "ecosystem": "PyPI"},
-					"ranges":  []any{map[string]any{"type": "ECOSYSTEM", "events": []any{map[string]string{"fixed": "2.0.0"}}}},
-				}},
-			})
-		}
-		rows = append(rows, map[string]any{
-			"package": map[string]string{"name": "example", "version": version, "ecosystem": "PyPI"},
-			"groups":  findings, "vulnerabilities": advisories,
-			"licenses": []string{"MIT", "GPL-3.0"}, "license_violations": []string{"GPL-3.0"},
-		})
-	}
-	data, err := json.Marshal(map[string]any{"results": []any{map[string]any{"packages": rows}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result models.VulnerabilityResults
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
-func BenchmarkCompactResults(b *testing.B) {
-	for _, tc := range []struct {
-		name             string
-		packages, groups int
-		duplicate        bool
-	}{
-		{"small", 1, 1, false},
-		{"unique", 1000, 1, false},
-		{"duplicate", 1000, 1, true},
-		{"many_groups", 10, 200, false},
-	} {
-		b.Run(tc.name, func(b *testing.B) {
-			input := reportFixture(b, tc.packages, tc.groups, tc.duplicate)
-			req := request{AllowedLicenses: []string{"MIT"}}
-			b.ReportAllocs()
-			b.ResetTimer()
-			for b.Loop() {
-				compactResults(input, req, scanMetadata{})
-			}
-		})
+func TestDistroSourceAndExtensionFacts(t *testing.T) {
+	raw := `{"package":{"name":"binary","os_package_name":"source","version":"1:2.0-3ubuntu1","ecosystem":"Ubuntu:24.04"},"vulnerabilities":[{"id":"A","database_specific":{"severity":"HIGH","ignored":"drop"},"affected":[{"package":{"name":"source","ecosystem":"Ubuntu:24.04:Pro:LTS"},"ecosystem_specific":{"urgency":"high"},"severity":[{"type":"CVSS_V3","score":"vector"}],"ranges":[{"type":"ECOSYSTEM","events":[{"fixed":"1:2.0-3ubuntu1"},{"fixed":"1:2.0-3ubuntu2"},{"last_affected":"99"},{"limit":"100"}]}]}]}]}`
+	r := fixture(t, raw)
+	p := r.Results[0].Packages[0]
+	f := advisoryFixes(p.Package, p.Vulnerabilities[0])
+	a := projectAdvisory(p.Vulnerabilities[0])
+	if !reflect.DeepEqual(f.Versions, []string{"1:2.0-3ubuntu2"}) || len(f.Severities) != 1 || !reflect.DeepEqual(f.Urgencies, []string{"high"}) || a.DatabaseSeverity == nil || *a.DatabaseSeverity != "HIGH" {
+		t.Fatalf("projection: %+v %+v", f, a)
 	}
 }

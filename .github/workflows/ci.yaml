@@ -45,7 +45,7 @@ jobs:
 
             - name: Run Go tests
               working-directory: go
-              run: go test -mod=readonly ./...
+              run: go test -mod=readonly -race ./...
 
             - name: Build source distribution and wheel
               run: uv build

@@ -9,4 +9,5 @@ pytestmark = pytest.mark.integration
 def test_dockerhub_image_has_inventory(image: str) -> None:
     result = osvpy.scan_image(image, all_packages=True)
     assert result.packages
-    assert result.metadata.image_digest is not None
+    assert result.complete
+    assert result.images[0].data.metadata.image_digest

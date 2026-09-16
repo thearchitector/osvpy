@@ -1,14 +1,8 @@
-// Package main implements the versioned JSON/C boundary. No Go pointer escapes it.
+// Package main implements the normalized reporting boundary.
 package main
-
-/*
-#include <stdlib.h>
-*/
-import "C"
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -17,7 +11,6 @@ import (
 	"slices"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -48,8 +41,7 @@ type request struct {
 	Auth            *registryAuth `json:"auth,omitempty"`
 	Platform        string        `json:"platform,omitempty"`
 	DatabasePath    string        `json:"database_path,omitempty"`
-	Detail          string        `json:"detail,omitempty"`
-	AllowedLicenses []string      `json:"allowed_licenses,omitempty"`
+	AllowedLicenses []string      `json:"allowed_licenses"`
 }
 
 type nativeError struct {
@@ -66,70 +58,20 @@ type scanMetadata struct {
 	ImagePlatform   string  `json:"image_platform,omitempty"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	NoPackages      bool    `json:"no_packages"`
+	DatabasePath    string  `json:"database_path"`
 }
 
 type response struct {
-	ABIVersion int           `json:"abi_version"`
-	OK         bool          `json:"ok"`
-	Result     *fullScanData `json:"result,omitempty"`
-	Report     *scanResult   `json:"report,omitempty"`
-	Error      *nativeError  `json:"error,omitempty"`
+	Result   models.VulnerabilityResults
+	Metadata scanMetadata
+	Error    *nativeError
 }
 
 func failure(code, message string) response {
-	return response{ABIVersion: 3, Error: &nativeError{Code: code, Message: message}}
+	return response{Error: &nativeError{Code: code, Message: message}}
 }
 
-// invoke also recovers panics when exercised from Go tests. Panic values are
-// intentionally not returned: dependencies may include credentials in errors.
-func invoke(data []byte) (out []byte) {
-	return encodeResponse(func() response { return execute(data) })
-}
-
-func encodeResponse(run func() response) (out []byte) {
-	defer func() {
-		if recover() != nil {
-			out = []byte(`{"abi_version":3,"ok":false,"error":{"code":"internal_error","message":"Native scanner panicked"}}`)
-		}
-	}()
-	r := run()
-	out, err := json.Marshal(r)
-	if err != nil {
-		return []byte(`{"abi_version":3,"ok":false,"error":{"code":"internal_error","message":"Cannot serialize scanner response"}}`)
-	}
-	return out
-}
-
-//export osv_scan_image
-func osv_scan_image(input *C.char) (out *C.char) {
-	return C.CString(string(invoke([]byte(C.GoString(input)))))
-}
-
-//export osv_free_string
-func osv_free_string(ptr *C.char) {
-	C.free(unsafe.Pointer(ptr))
-}
-
-func execute(data []byte) response {
-	var req request
-	if err := json.Unmarshal(data, &req); err != nil {
-		return failure("invalid_request", err.Error())
-	}
-	if req.Source == "" {
-		req.Source = "registry"
-	}
-	if req.Detail != "" && req.Detail != "compact" && req.Detail != "full" {
-		return failure("invalid_request", "detail must be compact or full")
-	}
-	if req.Offline && req.AllowedLicenses != nil {
-		return failure("offline_unavailable", "License checks require online scanning")
-	}
-	if req.Offline && req.Source == "registry" {
-		return failure("offline_unavailable", "Offline scans require a local Docker archive and a pre-populated database_path")
-	}
-	if req.Offline && req.DatabasePath == "" {
-		return failure("offline_unavailable", "Offline scans require a pre-populated database_path")
-	}
+func execute(req request) (out response) {
 	var ref name.Reference
 	var platform *v1.Platform
 	if req.Source == "registry" {
@@ -146,13 +88,15 @@ func execute(data []byte) response {
 		}
 	}
 
-	scanMu.Lock()
-	defer scanMu.Unlock()
 	osvscanner.SetLogger(slog.NewTextHandler(io.Discard, nil))
 	started := time.Now()
 	path := req.Image
 	metadata := &scanMetadata{ScannerVersion: scannerVersion, Source: req.Source,
-		Offline: req.Offline, AllPackages: req.AllPackages}
+		Offline: req.Offline, AllPackages: req.AllPackages, DatabasePath: req.DatabasePath}
+	defer func() {
+		metadata.DurationSeconds = time.Since(started).Seconds()
+		out.Metadata = *metadata
+	}()
 	if req.Source == "registry" {
 		// Explicit auth only. DefaultKeychain can execute Docker credential helpers.
 		auth := authn.Anonymous
@@ -199,6 +143,25 @@ func execute(data []byte) response {
 		if err != nil {
 			return failure("scan_error", err.Error())
 		}
+		// Validate the single-image Docker-save contract and retain available
+		// identity before the scanner constructs its inventory graph.
+		img, err := tarball.ImageFromPath(path, nil)
+		if err != nil {
+			return failure("scan_error", err.Error())
+		}
+		config, err := img.ConfigFile()
+		if err != nil {
+			return failure("scan_error", err.Error())
+		}
+		if config.OS != "linux" {
+			return failure("unsupported_image", "Only Linux container images are supported")
+		}
+		digest, err := img.Digest()
+		if err != nil {
+			return failure("scan_error", err.Error())
+		}
+		metadata.ImageDigest = digest.String()
+		metadata.ImagePlatform = config.OS + "/" + config.Architecture
 	}
 	actions := osvscanner.ScannerActions{
 		Image: path, IsImageArchive: true, ShowAllPackages: req.AllPackages || req.AllowedLicenses != nil,
@@ -206,10 +169,8 @@ func execute(data []byte) response {
 		LocalDBPath: req.DatabasePath, DownloadDatabases: false,
 		ScanLicensesAllowlist: req.AllowedLicenses,
 		ScanLicensesSummary:   req.AllowedLicenses != nil,
-		ExperimentalScannerActions: osvscanner.ExperimentalScannerActions{
-			RequestUserAgent:   "osvpy/0.1.0",
-			TransitiveScanning: osvscanner.TransitiveScanningActions{Disabled: true},
-		},
+		RequestUserAgent:      "osvpy/0.1.0",
+		TransitiveScanning:    osvscanner.TransitiveScanningActions{Disabled: true},
 	}
 	result, err := osvscanner.DoContainerScan(actions)
 	if err != nil && !errors.Is(err, osvscanner.ErrVulnerabilitiesFound) && !errors.Is(err, osvscanner.ErrNoPackagesFound) {
@@ -226,32 +187,22 @@ func execute(data []byte) response {
 		for i := range result.Results {
 			for j := range result.Results[i].Packages {
 				pkg := &result.Results[i].Packages[j]
-				if len(pkg.Licenses) == 0 {
-					return failure("scan_error", "License information could not be retrieved for all detected packages")
-				}
 				if len(req.AllowedLicenses) == 0 {
 					pkg.LicenseViolations = slices.Clone(pkg.Licenses)
 				}
 			}
 			if !req.AllPackages {
 				result.Results[i].Packages = slices.DeleteFunc(result.Results[i].Packages, func(p models.PackageVulns) bool {
-					return len(p.Vulnerabilities) == 0 && len(p.LicenseViolations) == 0
+					return len(p.Vulnerabilities) == 0 && len(p.LicenseViolations) == 0 && len(p.Licenses) > 0
 				})
 			}
 		}
 	}
-	resp := response{ABIVersion: 3, OK: true}
-	if req.Detail == "full" {
-		resp.Result = &fullScanData{VulnerabilityResults: result, Image: req.Image, Metadata: *metadata}
-	} else {
-		resp.Report = compactResults(result, req, *metadata)
-	}
-	return resp
+	return response{Result: result, Metadata: *metadata}
 }
 
 func acquisitionError(err error) response {
-	var transportError *transport.Error
-	if errors.As(err, &transportError) {
+	if transportError, ok := errors.AsType[*transport.Error](err); ok {
 		switch transportError.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
 			return failure("registry_authentication", "Registry denied access; supply credentials with pull permission")

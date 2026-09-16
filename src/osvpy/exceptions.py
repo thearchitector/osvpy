@@ -30,4 +30,4 @@ class OfflineDatabaseError(ScanError):
 
 
 class NativeLibraryError(OSVError):
-    """The native library is unavailable or violated the JSON ABI."""
+    """The native library could not load or complete an operation."""

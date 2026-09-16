@@ -1,154 +1,263 @@
-"""Small reporting layer over generated Pydantic models."""
+"""Immutable indexed reporting views; expanded collections are never cached."""
 
-from contextlib import suppress
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, overload
 
-from cvss import CVSS2, CVSS3, CVSS4
-from cvss.exceptions import CVSSError
-from pydantic import BaseModel, computed_field
-
-from ._generated import (
-    Advisory,
-    FullScanData,
-    LayerMetadata,
-    Package,
-    PackageInfo,
-    ScanMetadata,
-    ScanResult,
-    SourceInfo,
-)
-from ._generated import NativeResponse as _NativeResponse
+from ._store import FINDING, OCCURRENCE, U32
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable
 
-_CVSS_PARSERS = {"CVSS_V2": CVSS2, "CVSS_V3": CVSS3, "CVSS_V4": CVSS4}
-
-__all__ = [
-    "Advisory",
-    "FullScanResult",
-    "LayerMetadata",
-    "Package",
-    "PackageInfo",
-    "RegistryAuth",
-    "ScanMetadata",
-    "ScanResult",
-    "SourceInfo",
-    "Vulnerability",
-]
+    from ._schema import (
+        NativeError,
+        ReportAdvisory,
+        ReportAssessment,
+        ReportContext,
+        ReportFix,
+        ReportImage,
+        ReportLicense,
+        ReportPackage,
+        ReportVulnerability,
+    )
+    from ._store import Store
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RegistryAuth:
-    """Explicit registry credentials, excluded from repr."""
+    """Explicit credentials, excluded from repr."""
 
     username: str = field(repr=False)
     password: str = field(repr=False)
 
 
-class Vulnerability(BaseModel):
-    """An advisory occurrence with installed-package context and report properties.
+@dataclass(frozen=True, slots=True)
+class IndexedSequence[T](Sequence[T]):
+    _store: "Store"
+    _factory: "Callable[[Store, int], T]"
+    _size: int
+    _members: bytes | None = None
+    _start: int = 0
 
-    The complete advisory is available through ``advisory``; no data is copied
-    into a second hand-maintained advisory schema.
-    """
+    def __len__(self) -> int:
+        return self._size
 
-    advisory: Advisory
-    installed: PackageInfo
-    source: SourceInfo
-    image_layer: LayerMetadata | None = None
+    @overload
+    def __getitem__(self, index: int) -> T: ...
 
-    @computed_field  # type: ignore[prop-decorator]
+    @overload
+    def __getitem__(self, index: slice) -> tuple[T, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> T | tuple[T, ...]:
+        if isinstance(index, slice):
+            return tuple(self[i] for i in range(*index.indices(len(self))))
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        row = (
+            index
+            if self._members is None
+            else U32.unpack_from(self._members, (self._start + index) * 4)[0]
+        )
+        return self._factory(self._store, row)
+
+
+@dataclass(frozen=True, slots=True)
+class _View:
+    _store: "Store" = field(repr=False)
+    index: int
+
+    def _members[T](
+        self, name: str, factory: "Callable[[Store, int], T]"
+    ) -> IndexedSequence[T]:
+        members, start, stop = self._store.members(name, self.index)
+        return IndexedSequence(self._store, factory, stop - start, members, start)
+
+
+@dataclass(frozen=True, slots=True)
+class Package(_View):
     @property
-    def id(self) -> str:
-        return self.advisory.id or ""
+    def data(self) -> "ReportPackage":
+        return self._store.report.packages[self.index]
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def package(self) -> str:
-        return self.installed.name
+    def present_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("package_present_images", ImageResult)
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def installed_version(self) -> str:
-        return self.installed.version
+    def vulnerable_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("package_vulnerable_images", ImageResult)
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def ecosystem(self) -> str:
-        return self.installed.ecosystem
+    def noncompliant_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("package_noncompliant_images", ImageResult)
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def layer(self) -> str | None:
-        return self.image_layer.diff_id if self.image_layer else None
+    def affected_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("package_affected_images", ImageResult)
 
-    def _fix_events(self) -> "Iterator[str]":
-        return (
-            event.fixed
-            for affected in self.advisory.affected or ()
-            if affected.package is not None
-            and affected.package.name == self.package
-            and affected.package.ecosystem == self.ecosystem
-            for version_range in affected.ranges or ()
-            for event in version_range.events or ()
-            if event.fixed is not None
+    @property
+    def findings(self) -> IndexedSequence["Finding"]:
+        return self._members("package_findings", Finding)
+
+
+@dataclass(frozen=True, slots=True)
+class Vulnerability(_View):
+    @property
+    def data(self) -> "ReportVulnerability":
+        return self._store.report.vulnerabilities[self.index]
+
+    @property
+    def affected_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("vulnerability_affected_images", ImageResult)
+
+    @property
+    def findings(self) -> IndexedSequence["Finding"]:
+        return self._members("vulnerability_findings", Finding)
+
+
+@dataclass(frozen=True, slots=True)
+class AdvisorySource(_View):
+    @property
+    def data(self) -> "ReportAdvisory":
+        return self._store.report.advisory_sources[self.index]
+
+    @property
+    def affected_images(self) -> IndexedSequence["ImageResult"]:
+        return self._members("advisory_affected_images", ImageResult)
+
+    @property
+    def findings(self) -> IndexedSequence["Finding"]:
+        return self._members("advisory_findings", Finding)
+
+
+@dataclass(frozen=True, slots=True)
+class Occurrence(_View):
+    def _row(self) -> tuple[int, int, int, int]:
+        return OCCURRENCE.unpack_from(self._store.report.occurrences, self.index * 16)
+
+    @property
+    def image(self) -> "ImageResult":
+        return ImageResult(self._store, self._row()[0])
+
+    @property
+    def package(self) -> Package:
+        return Package(self._store, self._row()[1])
+
+    @property
+    def context(self) -> "ReportContext":
+        return self._store.report.contexts[self._row()[2]]
+
+    @property
+    def license_assessment(self) -> "ReportLicense":
+        return self._store.report.licenses[self._row()[3]]
+
+    @property
+    def findings(self) -> IndexedSequence["Finding"]:
+        return self._members("occurrence_findings", Finding)
+
+
+@dataclass(frozen=True, slots=True)
+class Finding(_View):
+    def _row(self) -> tuple[int, int, int, int, int]:
+        return FINDING.unpack_from(self._store.report.findings, self.index * 20)
+
+    @property
+    def occurrence(self) -> Occurrence:
+        return Occurrence(self._store, self._row()[0])
+
+    @property
+    def advisory_source(self) -> AdvisorySource:
+        return AdvisorySource(self._store, self._row()[1])
+
+    @property
+    def fix_evidence(self) -> "ReportFix":
+        return self._store.report.fixes[self._row()[2]]
+
+    @property
+    def assessment(self) -> "ReportAssessment":
+        return self._store.report.assessments[self._row()[3]]
+
+    @property
+    def vulnerability(self) -> Vulnerability:
+        return Vulnerability(self._store, self._row()[4])
+
+
+@dataclass(frozen=True, slots=True)
+class ImageResult(_View):
+    @property
+    def data(self) -> "ReportImage":
+        return self._store.report.images[self.index]
+
+    @property
+    def complete(self) -> bool:
+        return self.data.status == "complete"
+
+    @property
+    def packages(self) -> IndexedSequence[Package]:
+        return self._members("image_packages", Package)
+
+    @property
+    def occurrences(self) -> IndexedSequence[Occurrence]:
+        return self._members("image_occurrences", Occurrence)
+
+    @property
+    def vulnerable_packages(self) -> IndexedSequence[Package]:
+        return self._members("image_vulnerable_packages", Package)
+
+    @property
+    def noncompliant_packages(self) -> IndexedSequence[Package]:
+        return self._members("image_noncompliant_packages", Package)
+
+    @property
+    def vulnerabilities(self) -> IndexedSequence[Vulnerability]:
+        return self._members("image_vulnerabilities", Vulnerability)
+
+    @property
+    def findings(self) -> IndexedSequence[Finding]:
+        return self._members("image_findings", Finding)
+
+
+@dataclass(frozen=True, slots=True)
+class BatchResult:
+    _store: "Store" = field(repr=False)
+
+    @property
+    def images(self) -> IndexedSequence[ImageResult]:
+        return IndexedSequence(self._store, ImageResult, len(self._store.report.images))
+
+    @property
+    def packages(self) -> IndexedSequence[Package]:
+        return IndexedSequence(self._store, Package, len(self._store.report.packages))
+
+    @property
+    def vulnerabilities(self) -> IndexedSequence[Vulnerability]:
+        return IndexedSequence(
+            self._store, Vulnerability, len(self._store.report.vulnerabilities)
         )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def fixed_versions(self) -> list[str]:
-        return list(dict.fromkeys(self._fix_events()))
+    def advisory_sources(self) -> IndexedSequence[AdvisorySource]:
+        return IndexedSequence(
+            self._store, AdvisorySource, len(self._store.report.advisory_sources)
+        )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def fixed_version(self) -> str | None:
-        fixes = self._fix_events()
-        first = next(fixes, None)
-        return None if any(fix != first for fix in fixes) else first
+    def findings(self) -> IndexedSequence[Finding]:
+        return IndexedSequence(
+            self._store, Finding, len(self._store.report.findings) // 20
+        )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
-    def severity(self) -> float | None:
-        highest = None
-        for severity in self.advisory.severity or ():
-            parser = _CVSS_PARSERS.get(severity.type or "")
-            if parser is not None and severity.score is not None:
-                with suppress(CVSSError):
-                    score = float(parser(severity.score).scores()[0])
-                    if highest is None or score > highest:
-                        highest = score
-        return highest
+    def complete(self) -> bool:
+        return all(im.complete for im in self.images)
 
-
-class FullScanResult(FullScanData):
-    """Complete generated result fields plus convenient flattened report views."""
-
-    @computed_field  # type: ignore[prop-decorator]
-    @cached_property
-    def packages(self) -> list[Package]:
-        return [p for source in self.sources or [] for p in source.packages or []]
-
-    @computed_field  # type: ignore[prop-decorator]
-    @cached_property
-    def vulnerabilities(self) -> list[Vulnerability]:
-        layers = self.image_metadata.layers or [] if self.image_metadata else []
-        return [
-            Vulnerability(
-                advisory=advisory,
-                installed=package.package,
-                source=source.source,
-                image_layer=layers[package.package.image_origin.layer_index]
-                if package.package.image_origin is not None
-                else None,
-            )
-            for source in self.sources or []
-            for package in source.packages or []
-            for advisory in package.vulnerabilities or []
-        ]
-
-
-class NativeResponse(_NativeResponse):
-    result: FullScanResult | None = None
+    @property
+    def errors(self) -> tuple[tuple[int, "NativeError"], ...]:
+        return tuple(
+            (im.index, d)
+            for im in self.images
+            if not im.complete
+            for d in im.data.diagnostics
+        )

@@ -1,4 +1,4 @@
-"""Small ctypes boundary. Every non-null returned allocation is freed once."""
+"""ABI 4 construction; all C output is released before returning Python views."""
 
 import ctypes
 import json
@@ -8,35 +8,28 @@ from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .exceptions import (
-    ImageNotFoundError,
-    InvalidImageError,
-    NativeLibraryError,
-    OfflineDatabaseError,
-    RegistryAuthenticationError,
-    ScanError,
-)
-from .models import NativeResponse
+from ._store import decode
+from .exceptions import NativeLibraryError
+from .models import BatchResult
 
 if TYPE_CHECKING:
     from typing import Any
 
-_ERRORS = {
-    "image_not_found": ImageNotFoundError,
-    "registry_authentication": RegistryAuthenticationError,
-    "invalid_image": InvalidImageError,
-    "invalid_request": ScanError,
-    "offline_unavailable": OfflineDatabaseError,
-    "internal_error": NativeLibraryError,
-}
-
 
 def _library_path() -> Path:
-    system = platform.system()
     names = {"Linux": "libosvpy.so", "Darwin": "libosvpy.dylib"}
+    system = platform.system()
     if system not in names:
         raise NativeLibraryError(f"No native library support for {system}")
     return Path(str(files("osvpy") / "_lib" / names[system]))
+
+
+def _check(status: int) -> None:
+    if status:
+        code = {1: "internal_error", 2: "report_overflow", 3: "allocation_failure"}[
+            status
+        ]
+        raise NativeLibraryError(f"Native batch failed: {code}", code=code)
 
 
 class NativeLibrary:
@@ -44,45 +37,57 @@ class NativeLibrary:
         path = _library_path()
         try:
             self._lib = ctypes.CDLL(str(path))
-            self._scan = self._lib.osv_scan_image
-            self._scan.argtypes = [ctypes.c_char_p]
-            # c_char_p as the return type would discard the allocation address.
-            self._scan.restype = ctypes.c_void_p
-            self._free = self._lib.osv_free_string
+            self._begin = self._lib.osv_batch_begin
+            self._begin.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_size_t)]
+            self._begin.restype = ctypes.c_int
+            self._add = self._lib.osv_batch_add
+            self._add.argtypes = [ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+            self._add.restype = ctypes.c_int
+            self._finish = self._lib.osv_batch_finish
+            self._finish.argtypes = [
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            self._finish.restype = ctypes.c_int
+            self._abort = self._lib.osv_batch_abort
+            self._abort.argtypes = [ctypes.c_size_t]
+            self._abort.restype = ctypes.c_int
+            self._free = self._lib.osv_report_free
             self._free.argtypes = [ctypes.c_void_p]
             self._free.restype = None
         except OSError as exc:
             raise NativeLibraryError(
-                f"Cannot load osvpy native library at {path}. Install a wheel for your "
-                "platform, or build the native library for a source checkout."
+                f"Cannot load ABI 4 native library at {path}; rebuild or reinstall osvpy"
             ) from exc
 
-    def call(self, request: dict[str, "Any"]) -> NativeResponse:
+    def call(self, inputs: tuple[str, ...], request: dict[str, "Any"]) -> BatchResult:
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
-        ptr = self._scan(payload)
+        handle = ctypes.c_size_t()
+        ptr = ctypes.c_void_p()
+        size = ctypes.c_size_t()
         try:
-            response = ctypes.string_at(ptr)
+            _check(self._begin(payload, ctypes.byref(handle)))
+            for image in inputs:
+                # Python regains control between adds, including cancellation.
+                encoded = image.encode("utf-8")
+                _check(self._add(handle, encoded, len(encoded)))
+            _check(self._finish(handle, ctypes.byref(ptr), ctypes.byref(size)))
+            return BatchResult(decode(ctypes.string_at(ptr, size.value)))
         finally:
-            self._free(ptr)
-        envelope = NativeResponse.model_validate_json(response)
-        if envelope.abi_version != 3:
-            raise NativeLibraryError("Unsupported native ABI version")
-        if not envelope.ok:
-            error = envelope.error
-            assert error is not None
-            raise _ERRORS.get(error.code, ScanError)(error.message, code=error.code)
-        return envelope
+            if ptr.value:
+                self._free(ptr)
+            if handle.value:
+                _check(self._abort(handle))
 
 
 _instance: NativeLibrary | None = None
 _scan_lock = threading.Lock()
 
 
-def scan(request: dict[str, "Any"]) -> NativeResponse:
+def scan(inputs: tuple[str, ...], request: dict[str, "Any"]) -> BatchResult:
     global _instance
-    # Bound transient memory across native scanning, encoding and Python
-    # validation, not just the upstream scan protected by the Go logger mutex.
     with _scan_lock:
         if _instance is None:
             _instance = NativeLibrary()
-        return _instance.call(request)
+        return _instance.call(inputs, request)

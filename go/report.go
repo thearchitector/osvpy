@@ -1,288 +1,234 @@
 package main
 
 import (
-	"net/url"
+	"cmp"
+	"deps.dev/util/semver"
 	"slices"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/osv-scalibr/semantic"
 	"github.com/google/osv-scanner/v2/pkg/models"
 	"github.com/ossf/osv-schema/bindings/go/osvschema"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Compact reports contain relationships, not copies of full advisories. These
-// structs also generate the Python schema, just like the upstream full result.
-type scanResult struct {
-	Image           string                 `json:"image"`
-	Metadata        scanMetadata           `json:"metadata"`
-	Vulnerabilities []vulnerabilitySummary `json:"vulnerabilities"`
-	Packages        []packageSummary       `json:"packages"`
-	Licenses        *licenseReport         `json:"licenses,omitempty"`
+// Only library-owned records cross the boundary. No upstream extension maps.
+type reportPackage struct {
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Ecosystem     string `json:"ecosystem"`
+	Commit        string `json:"commit"`
+	OSPackageName string `json:"os_package_name"`
+	PURL          string `json:"purl"`
 }
-
-type fullScanData struct {
-	models.VulnerabilityResults
-	Image    string       `json:"image"`
-	Metadata scanMetadata `json:"metadata"`
+type reportSeverity struct {
+	Type   string `json:"type"`
+	Source string `json:"source"`
+	Vector string `json:"vector"`
 }
-
-type severitySummary struct {
-	Score  *float64 `json:"score"`
-	Rating string   `json:"rating" jsonschema:"enum=unknown,enum=none,enum=low,enum=medium,enum=high,enum=critical"`
+type reportReference struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
-
-type vulnerabilitySummary struct {
-	ID       string          `json:"id"`
-	Aliases  []string        `json:"aliases"`
-	Severity severitySummary `json:"severity"`
-	Packages []string        `json:"packages"`
+type reportAdvisory struct {
+	ID               string            `json:"id"`
+	Aliases          []string          `json:"aliases,omitempty"`
+	Summary          string            `json:"summary"`
+	Modified         *string           `json:"modified"`
+	Published        *string           `json:"published"`
+	Withdrawn        *string           `json:"withdrawn"`
+	Severities       []reportSeverity  `json:"severities,omitempty"`
+	References       []reportReference `json:"references,omitempty"`
+	DatabaseSeverity *string           `json:"database_severity"`
 }
-
-type packageSummary struct {
-	ID               string           `json:"id"`
-	Name             string           `json:"name"`
-	InstalledVersion string           `json:"installed_version"`
-	Ecosystem        string           `json:"ecosystem"`
-	Vulnerabilities  []packageFinding `json:"vulnerabilities"`
+type reportVulnerability struct {
+	ID      string   `json:"id"`
+	Aliases []string `json:"aliases,omitempty"`
 }
-
-type packageFinding struct {
-	ID            string   `json:"id"`
-	FixedVersions []string `json:"fixed_versions"`
+type reportContext struct {
+	Path             string   `json:"path"`
+	SourceType       string   `json:"source_type"`
+	Layer            *string  `json:"layer"`
+	DependencyGroups []string `json:"dependency_groups,omitempty"`
 }
-
-type licenseReport struct {
-	AllowedLicenses []string           `json:"allowed_licenses"`
-	Violations      []licenseViolation `json:"violations"`
+type reportAssessment struct {
+	Called      *bool  `json:"called"`
+	Unimportant *bool  `json:"unimportant"`
+	MaxSeverity string `json:"max_severity"`
 }
-
-type licenseViolation struct {
-	Package   string   `json:"package"`
-	Licenses  []string `json:"licenses"`
-	Forbidden []string `json:"forbidden"`
+type reportLicense struct {
+	Licenses   []string `json:"licenses,omitempty"`
+	Policy     []string `json:"policy,omitempty"`
+	Violations []string `json:"violations,omitempty"`
+	Status     string   `json:"status"`
+}
+type reportFix struct {
+	Versions   []string         `json:"versions,omitempty"`
+	Status     string           `json:"status"`
+	Severities []reportSeverity `json:"severities,omitempty"`
+	Urgencies  []string         `json:"urgencies,omitempty"`
+}
+type reportImage struct {
+	Requested   string        `json:"requested"`
+	Metadata    scanMetadata  `json:"metadata"`
+	OS          *string       `json:"os"`
+	Status      string        `json:"status"`
+	Diagnostics []nativeError `json:"diagnostics,omitempty"`
+}
+type reportStore struct {
+	ABIVersion      int                   `json:"abi_version"`
+	SchemaVersion   int                   `json:"schema_version"`
+	Images          []reportImage         `json:"images,omitempty"`
+	Packages        []reportPackage       `json:"packages,omitempty"`
+	Vulnerabilities []reportVulnerability `json:"vulnerabilities,omitempty"`
+	AdvisorySources []reportAdvisory      `json:"advisory_sources,omitempty"`
+	Contexts        []reportContext       `json:"contexts,omitempty"`
+	Assessments     []reportAssessment    `json:"assessments,omitempty"`
+	Licenses        []reportLicense       `json:"licenses,omitempty"`
+	Fixes           []reportFix           `json:"fixes,omitempty"`
+	// Occurrences: image, package, context, license. Findings: occurrence,
+	// advisory source, fix evidence, assessment, vulnerability group.
+	Occurrences []byte `json:"occurrences,omitempty"`
+	Findings    []byte `json:"findings,omitempty"`
 }
 
 func unique(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
 	slices.Sort(values)
-	values = slices.Compact(values)
-	// Release occurrence-sized storage after heavy deduplication. Avoid the
-	// extra allocation for small or mostly unique collections.
-	if cap(values) >= 64 && cap(values)/4 > len(values) {
-		trimmed := make([]string, len(values))
-		copy(trimmed, values)
-		return trimmed
-	}
-	return values
+	return slices.Clone(slices.Compact(values))
 }
 
-func rating(score *float64) string {
-	switch {
-	case score == nil:
-		return "unknown"
-	case *score >= 9:
-		return "critical"
-	case *score >= 7:
-		return "high"
-	case *score >= 4:
-		return "medium"
-	case *score > 0:
-		return "low"
+func canonicalSeverities(values []reportSeverity) []reportSeverity {
+	slices.SortFunc(values, func(a, b reportSeverity) int {
+		return cmp.Or(strings.Compare(a.Type, b.Type), strings.Compare(a.Source, b.Source), strings.Compare(a.Vector, b.Vector))
+	})
+	return slices.Clone(slices.Compact(values))
+}
+func timestamp(t *timestamppb.Timestamp) *string {
+	if t == nil {
+		return nil
+	}
+	if err := t.CheckValid(); err != nil {
+		panic("invalid upstream timestamp")
+	}
+	s := t.AsTime().Format(time.RFC3339Nano)
+	return &s
+}
+func projectAdvisory(a *osvschema.Vulnerability) reportAdvisory {
+	r := reportAdvisory{ID: a.GetId(), Aliases: unique(slices.Clone(a.GetAliases())), Summary: a.GetSummary(), Modified: timestamp(a.GetModified()), Published: timestamp(a.GetPublished()), Withdrawn: timestamp(a.GetWithdrawn())}
+	for _, s := range a.GetSeverity() {
+		r.Severities = append(r.Severities, reportSeverity{s.GetType().String(), s.GetSource().String(), s.GetScore()})
+	}
+	for _, ref := range a.GetReferences() {
+		r.References = append(r.References, reportReference{ref.GetType().String(), ref.GetUrl()})
+	}
+	r.DatabaseSeverity = extensionString(a.GetDatabaseSpecific(), "severity")
+	r.Severities = canonicalSeverities(r.Severities)
+	slices.SortFunc(r.References, func(a, b reportReference) int {
+		return cmp.Or(strings.Compare(a.Type, b.Type), strings.Compare(a.URL, b.URL))
+	})
+	r.References = slices.Clone(slices.Compact(r.References))
+	return r
+}
+
+func extensionString(value *structpb.Struct, key string) *string {
+	if field := value.GetFields()[key]; field != nil {
+		if s, ok := field.Kind.(*structpb.Value_StringValue); ok {
+			text := strings.Clone(s.StringValue)
+			return &text
+		}
+	}
+	return nil
+}
+func ecosystem(s string) string {
+	if strings.HasPrefix(s, "Ubuntu:") {
+		return strings.ReplaceAll(strings.ReplaceAll(s, ":Pro", ""), ":LTS", "")
+	}
+	return s
+}
+
+// Reject permissive/legacy parser fallbacks before using ecosystem ordering.
+// Preserve their fixes as unknown rather than claiming supported ordering.
+func versionKnown(version, eco string) bool {
+	var system semver.System
+	switch strings.SplitN(eco, ":", 2)[0] {
+	case "PyPI":
+		system = semver.PyPI
+	case "npm":
+		system = semver.NPM
+	case "crates.io":
+		system = semver.Cargo
+	case "NuGet":
+		system = semver.NuGet
+	case "RubyGems":
+		system = semver.RubyGems
+	case "Packagist":
+		system = semver.Composer
+	case "Go":
+		system = semver.Go
+		if !strings.HasPrefix(version, "v") {
+			version = "v" + version
+		}
+	case "Bitnami", "Bioconductor", "ConanCenter", "Docker Hardened Images", "GHC", "Hex", "Julia", "SwiftURL", "Pub":
+		system = semver.DefaultSystem
 	default:
-		return "none"
+		return version != ""
 	}
+	_, err := system.Parse(version)
+	return err == nil
 }
-
-// Merge upstream alias groups across packages, preserving OSV's grouping rather
-// than matching vulnerabilities again. Prefer CVE IDs as component names.
-func vulnerabilityIDs(result models.VulnerabilityResults) map[string]string {
-	parent := map[string]string{}
-	var root func(string) string
-	root = func(id string) string {
-		if p, ok := parent[id]; !ok {
-			parent[id] = id
-		} else if p != id {
-			parent[id] = root(p)
-		}
-		return parent[id]
-	}
-	for _, source := range result.Results {
-		for _, pkg := range source.Packages {
-			for _, group := range pkg.Groups {
-				ids := group.Aliases // OSV includes the advisory IDs in this list.
-				for _, id := range ids {
-					a, b := root(ids[0]), root(id)
-					if strings.HasPrefix(b, "CVE-") && !strings.HasPrefix(a, "CVE-") ||
-						strings.HasPrefix(a, "CVE-") == strings.HasPrefix(b, "CVE-") && b < a {
-						a, b = b, a
-					}
-					parent[b] = a
-				}
-			}
-		}
-	}
-	for id := range parent {
-		parent[id] = root(id)
-	}
-	return parent
-}
-
-func compactResults(result models.VulnerabilityResults, req request, metadata scanMetadata) *scanResult {
-	report := &scanResult{Image: req.Image, Metadata: metadata, Vulnerabilities: []vulnerabilitySummary{}, Packages: []packageSummary{}}
-	ids := vulnerabilityIDs(result)
-	vulns := map[string]*vulnerabilitySummary{}
-	packages := map[string]*packageSummary{}
-	violations := map[string]*licenseViolation{}
-	for _, source := range result.Results {
-		for _, pkg := range source.Packages {
-			if !req.AllPackages && len(pkg.Vulnerabilities) == 0 && len(pkg.LicenseViolations) == 0 {
-				continue
-			}
-			info := pkg.Package
-			key := url.PathEscape(info.Ecosystem) + "/" + url.PathEscape(info.Name) + "@" + url.PathEscape(info.Version)
-			p := packages[key]
-			if p == nil {
-				p = &packageSummary{ID: key, Name: info.Name, InstalledVersion: info.Version,
-					Ecosystem: info.Ecosystem, Vulnerabilities: []packageFinding{}}
-				packages[key] = p
-			}
-			var singleGroup [1][]string
-			groupFixes := singleGroup[:]
-			if len(pkg.Groups) != 1 {
-				groupFixes = make([][]string, len(pkg.Groups))
-			}
-			packageFixes(pkg, groupFixes)
-			for groupIndex, group := range pkg.Groups {
-				id := ids[group.IDs[0]]
-				v := vulns[id]
-				if v == nil {
-					v = &vulnerabilitySummary{ID: id, Aliases: []string{}, Packages: []string{}}
-					vulns[id] = v
-				}
-				if len(v.Packages) == 0 || v.Packages[len(v.Packages)-1] != key {
-					v.Packages = append(v.Packages, key)
-				}
-				if score, err := strconv.ParseFloat(group.MaxSeverity, 64); err == nil &&
-					(v.Severity.Score == nil || score > *v.Severity.Score) {
-					v.Severity.Score = &score
-				}
-				fixes := groupFixes[groupIndex]
-				idx := slices.IndexFunc(p.Vulnerabilities, func(f packageFinding) bool { return f.ID == id })
-				if idx < 0 {
-					p.Vulnerabilities = append(p.Vulnerabilities, packageFinding{ID: id, FixedVersions: fixes})
-				} else {
-					p.Vulnerabilities[idx].FixedVersions = unique(append(p.Vulnerabilities[idx].FixedVersions, fixes...))
-				}
-			}
-			if req.AllowedLicenses != nil && len(pkg.LicenseViolations) > 0 {
-				l := violations[key]
-				if l == nil {
-					l = &licenseViolation{Package: key, Licenses: []string{}, Forbidden: []string{}}
-					violations[key] = l
-				}
-				for _, license := range pkg.Licenses {
-					l.Licenses = append(l.Licenses, string(license))
-				}
-				for _, license := range pkg.LicenseViolations {
-					l.Forbidden = append(l.Forbidden, string(license))
-				}
-			}
-		}
-	}
-	for alias, id := range ids {
-		if v := vulns[id]; v != nil && alias != id {
-			v.Aliases = append(v.Aliases, alias)
-		}
-	}
-	report.Vulnerabilities = make([]vulnerabilitySummary, 0, len(vulns))
-	for _, v := range vulns {
-		slices.Sort(v.Aliases)
-		v.Packages = unique(v.Packages)
-		v.Severity.Rating = rating(v.Severity.Score)
-		report.Vulnerabilities = append(report.Vulnerabilities, *v)
-	}
-	report.Packages = make([]packageSummary, 0, len(packages))
-	for _, p := range packages {
-		slices.SortFunc(p.Vulnerabilities, func(a, b packageFinding) int { return strings.Compare(a.ID, b.ID) })
-		report.Packages = append(report.Packages, *p)
-	}
-	slices.SortFunc(report.Vulnerabilities, func(a, b vulnerabilitySummary) int { return strings.Compare(a.ID, b.ID) })
-	slices.SortFunc(report.Packages, func(a, b packageSummary) int { return strings.Compare(a.ID, b.ID) })
-	if req.AllowedLicenses != nil {
-		report.Licenses = &licenseReport{AllowedLicenses: unique(slices.Clone(req.AllowedLicenses)), Violations: make([]licenseViolation, 0, len(violations))}
-		for _, l := range violations {
-			l.Licenses, l.Forbidden = unique(l.Licenses), unique(l.Forbidden)
-			report.Licenses.Violations = append(report.Licenses.Violations, *l)
-		}
-		slices.SortFunc(report.Licenses.Violations, func(a, b licenseViolation) int { return strings.Compare(a.Package, b.Package) })
-	}
-	return report
-}
-
-// Report explicit fix events for this package, using Scalibr's ecosystem-aware
-// ordering to exclude fixes older than the installed version. This is advisory
-// presentation, not a second vulnerability matcher or an upgrade recommendation.
-func packageFixes(pkg models.PackageVulns, fixes [][]string) {
-	for i := range fixes {
-		fixes[i] = []string{}
-	}
-	if len(pkg.Groups) == 0 {
-		return
-	}
-	// A single group needs no index. Otherwise route each advisory to its
-	// original groups, including overlapping groups and repeated advisory IDs.
-	var groupsByID map[string][]int
-	if len(pkg.Groups) > 1 {
-		groupsByID = make(map[string][]int)
-		for i, group := range pkg.Groups {
-			for _, id := range group.IDs {
-				members := groupsByID[id]
-				if len(members) == 0 || members[len(members)-1] != i {
-					groupsByID[id] = append(members, i)
-				}
-			}
-		}
-	}
-	installed, parseErr := semantic.Parse(pkg.Package.Version, pkg.Package.Ecosystem)
-	for _, advisory := range pkg.Vulnerabilities {
-		var groups []int
-		if len(pkg.Groups) == 1 {
-			if slices.Contains(pkg.Groups[0].IDs, advisory.GetId()) {
-				groups = []int{0}
-			}
-		} else {
-			groups = groupsByID[advisory.GetId()]
-		}
-		if len(groups) == 0 {
+func advisoryFixes(pkg models.PackageInfo, a *osvschema.Vulnerability) reportFix {
+	r := reportFix{Status: "no_reported_fix"}
+	installed, parseErr := semantic.Parse(pkg.Version, ecosystem(pkg.Ecosystem))
+	matched, unknown := false, false
+	for _, affected := range a.GetAffected() {
+		p := affected.GetPackage()
+		if ecosystem(p.GetEcosystem()) != ecosystem(pkg.Ecosystem) || (p.GetName() != pkg.Name && (pkg.OSPackageName == "" || p.GetName() != pkg.OSPackageName)) {
 			continue
 		}
-		for _, affected := range advisory.GetAffected() {
-			eco := affected.GetPackage().GetEcosystem()
-			if strings.HasPrefix(eco, "Ubuntu:") {
-				eco = strings.ReplaceAll(strings.ReplaceAll(eco, ":Pro", ""), ":LTS", "")
+		matched = true
+		for _, severity := range affected.GetSeverity() {
+			r.Severities = append(r.Severities, reportSeverity{severity.GetType().String(), severity.GetSource().String(), severity.GetScore()})
+		}
+		if urgency := extensionString(affected.GetEcosystemSpecific(), "urgency"); urgency != nil {
+			r.Urgencies = append(r.Urgencies, *urgency)
+		}
+		for _, rg := range affected.GetRanges() {
+			if rg.GetType() != osvschema.Range_ECOSYSTEM && rg.GetType() != osvschema.Range_SEMVER {
+				unknown = true
 			}
-			if affected.GetPackage().GetName() != pkg.Package.Name || eco != pkg.Package.Ecosystem {
+			if rg.GetType() == osvschema.Range_GIT {
+				unknown = true
 				continue
 			}
-			for _, r := range affected.GetRanges() {
-				for _, event := range r.GetEvents() {
-					fix := event.GetFixed()
-					if fix == "" || r.GetType() == osvschema.Range_GIT {
-						continue
-					}
-					if parseErr == nil {
-						if order, err := installed.CompareStr(fix); err == nil && order >= 0 {
-							continue
-						}
-					}
-					for _, group := range groups {
-						fixes[group] = append(fixes[group], fix)
-					}
+			for _, event := range rg.GetEvents() {
+				fix := event.GetFixed()
+				if fix == "" {
+					continue
 				}
+				if parseErr != nil || !versionKnown(pkg.Version, pkg.Ecosystem) || !versionKnown(fix, pkg.Ecosystem) {
+					unknown = true
+				} else if order, err := installed.CompareStr(fix); err != nil {
+					unknown = true
+				} else if order >= 0 {
+					continue
+				}
+				r.Versions = append(r.Versions, fix)
 			}
 		}
 	}
-	for i := range fixes {
-		fixes[i] = unique(fixes[i])
+	r.Versions = unique(r.Versions)
+	r.Urgencies = unique(r.Urgencies)
+	r.Severities = canonicalSeverities(r.Severities)
+	if len(r.Versions) > 0 {
+		r.Status = "reported"
 	}
+	if !matched || unknown {
+		r.Status = "unknown"
+	}
+	return r
 }

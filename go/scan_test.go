@@ -5,7 +5,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +29,7 @@ func fixtureTar(t *testing.T, files map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-func offlineRequest(t *testing.T, version string) []byte {
+func offlineRequest(t *testing.T, version string) request {
 	t.Helper()
 	dir := t.TempDir()
 	layer := fixtureTar(t, map[string][]byte{
@@ -65,11 +64,7 @@ func offlineRequest(t *testing.T, version string) []byte {
 	if err := os.WriteFile(filepath.Join(dbDir, "all.zip"), zipped.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	input, err := json.Marshal(request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir, Detail: "full"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return input
+	return request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir}
 }
 
 // Exercise concurrent native requests under the Go race detector. Python's
@@ -80,11 +75,10 @@ func TestConcurrentScansKeepInstalledVersionsSeparate(t *testing.T) {
 		input := offlineRequest(t, version)
 		t.Run(version, func(t *testing.T) {
 			t.Parallel()
-			var result response
-			if err := json.Unmarshal(invoke(input), &result); err != nil {
-				t.Fatal(err)
-			}
-			if !result.OK {
+			scanMu.Lock()
+			defer scanMu.Unlock()
+			result := execute(input)
+			if result.Error != nil {
 				t.Fatalf("scan failed: %+v", result.Error)
 			}
 			pkg := result.Result.Results[0].Packages[0]

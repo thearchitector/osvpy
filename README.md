@@ -18,180 +18,144 @@ python -m pip install osvpy
 uv add osvpy
 ```
 
-## Quick start
+## Scan images
 
 ```python
 import osvpy
 
-result = osvpy.scan_image("ubuntu:latest")
+batch = osvpy.scan_image("ubuntu:latest", "python:3.12-slim")
 
-for vuln in result.vulnerabilities:
-    print(vuln.id, vuln.severity.score, vuln.severity.rating, vuln.packages)
+for image in batch.images:
+    if not image.complete:
+        print(image.data.requested, image.data.diagnostics)
+        continue
 
-for package in result.packages:
-    for finding in package.vulnerabilities:
+    for finding in image.findings:
+        package = finding.occurrence.package.data
         print(
-            package.name, package.installed_version, finding.id, finding.fixed_versions
+            package.name,
+            package.version,
+            finding.vulnerability.data.id,
+            finding.fix_evidence.versions,
+            finding.fix_evidence.status,
         )
 ```
 
-## Scanning images
+Both scan functions return a `BatchResult`. Images appear in input order;
+repeated inputs have separate results. One input produces one image result;
+zero inputs produce an empty batch. Keyword options apply to every input.
+
+By default, reports include packages relevant to vulnerability or license
+findings. Use `all_packages=True` to include packages without findings.
+
+### Private registries and platforms
 
 ```python
-result = osvpy.scan_image("ubuntu:latest")  # Anonymous Docker Hub access
-result = osvpy.scan_image("ghcr.io/org/project:tag")
-result = osvpy.scan_image("registry.example.com/team/app@sha256:...")
-
-result = osvpy.scan_image(
-    "python:3.12-slim",
-    all_packages=True,  # Include packages without findings
-    platform="linux/arm64",  # Default: linux/amd64
-)
-
-print(result.metadata.image_digest)
-```
-
-Linux container images; registry tags and digests. Synchronous scans; no cancellation.
-Calls within one Python process are serialized through result validation to limit
-peak memory. Concurrent callers wait, including while a previous result is decoded.
-
-## Registry authentication
-
-```python
-import os
-from osvpy import RegistryAuth, scan_image
-
-result = scan_image(
+batch = osvpy.scan_image(
     "registry.example.com/team/app:latest",
-    auth=RegistryAuth(
-        username=os.environ["REGISTRY_USERNAME"],
-        password=os.environ["REGISTRY_PASSWORD"],
-    ),
+    auth=osvpy.RegistryAuth("reader", "password"),
+    platform="linux/arm64",
+    all_packages=True,
 )
+print(batch.images[0].data.metadata.image_digest)
 ```
 
-Explicit credentials only; no automatic credential discovery.
+Registry references accept tags or digests. The default platform is
+`linux/amd64`. Supply credentials through `RegistryAuth`; Docker credential
+helpers are not used.
 
-## Results and reports
-
-Compact reports by default:
-
-| Field                    | Contents                                                                    |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `result.vulnerabilities` | Unique vulnerability groups: ID, aliases, severity, affected package IDs    |
-| `result.packages`        | Package ID, name, installed version, ecosystem, and vulnerability/fix pairs |
-| `result.metadata`        | Scanner version, image digest/platform, scan options, and duration          |
-| `result.licenses`        | Requested allowlist and violations, or `None` when not requested            |
+### Docker-save archives
 
 ```python
-result = osvpy.scan_image("ubuntu:latest")
+from pathlib import Path
 
-report = result.model_dump()
-print(result.model_dump_json(indent=2))
-
-critical = [v for v in result.vulnerabilities if v.severity.rating == "critical"]
-
-packages = {package.id: package for package in result.packages}
-for vuln in critical:
-    print(vuln.id, vuln.aliases, vuln.severity.score)
-    for package_id in vuln.packages:
-        package = packages[package_id]
-        print(package.name, package.installed_version)
+batch = osvpy.scan_docker_archive(Path("one.tar"), Path("two.tar"), all_packages=True)
 ```
 
-Vulnerabilities are grouped by aliases, with CVE identifiers preferred. Severity
-is the highest reported CVSS score; unavailable scores are `None` / `unknown`.
-Ratings: `none`, `low`, `medium`, `high`, `critical`, `unknown`.
+Paths accept strings or `os.PathLike` objects. Each archive must contain one
+Docker-save image. A Docker daemon is not required. OCI-layout archives and
+multi-image archives are not supported.
 
-Fix versions are per package and vulnerability. An empty list means no reported
-fix; multiple versions may belong to different release branches.
-
-### Full details
+### Offline scanning
 
 ```python
-full = osvpy.scan_image("ubuntu:latest", detail="full")
-for finding in full.vulnerabilities:
-    print(finding.id, finding.package, finding.installed_version, finding.fixed_version)
-    print(finding.advisory, finding.source, finding.image_layer)
-
-print(full.model_dump_json(indent=2, exclude_computed_fields=True))
+batch = osvpy.scan_docker_archive("one.tar", offline=True, database_path="/srv/osv-db")
 ```
 
-Includes:
+The database directory must contain the relevant OSV database ZIPs, such as
+`/srv/osv-db/osv-scalibr/Ubuntu/all.zip`. Offline scans do not download databases
+or use the network. Registry scans and license checks require online mode.
 
-- advisories
-- affected ranges
-- references
-- credits
-- timestamps
-- severity
-- assessments
-- source paths
-- layers
-- analysis
-- license metadata
+## Read results
 
-`full.sources` groups packages and advisories by source; `full.packages` and
-`full.vulnerabilities` provide flattened views.
+Results are read-only. Package, vulnerability, advisory, and image fields are
+available through `.data`.
 
-Full-report fix versions include advisory events for the exact package/ecosystem;
-compact reports filter fixes against the installed version where supported.
+| Object            | Available data and relationships                                                                                                                                                                      |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch`           | `images`, `packages`, `vulnerabilities`, `advisory_sources`, `findings`, `complete`, `errors`                                                                                                         |
+| `image`           | `data.requested`, `data.os`, `data.metadata`, `data.status`, `data.diagnostics`, `complete`, `packages`, `occurrences`, `vulnerable_packages`, `noncompliant_packages`, `vulnerabilities`, `findings` |
+| `package`         | `data.name`, `data.version`, `data.ecosystem`, `data.commit`, `data.os_package_name`, `data.purl`, `present_images`, `vulnerable_images`, `noncompliant_images`, `affected_images`, `findings`        |
+| `vulnerability`   | `data.id`, `data.aliases`, `affected_images`, `findings`                                                                                                                                              |
+| `advisory_source` | `data.id`, `data.summary`, `data.severities`, `data.references`, `data.modified`, `data.published`, `data.withdrawn`, `affected_images`, `findings`                                                   |
+| `occurrence`      | `image`, `package`, `context`, `license_assessment`, `findings`                                                                                                                                       |
+| `finding`         | `occurrence`, `vulnerability`, `advisory_source`, `assessment`, `fix_evidence`                                                                                                                        |
 
-### License policy
+An occurrence describes a package in a particular image and location. Its
+`context` includes the path, source type, layer digest, and dependency groups.
+Package `affected_images` combines vulnerability-affected and license-noncompliant
+images; `present_images` includes every image reporting that package.
+
+Vulnerabilities group related advisory identifiers, preferring a CVE identifier
+when available. Source advisories retain their individual reporting facts.
+
+### Fix evidence
+
+`finding.fix_evidence.versions` contains reported package-specific, non-Git fix
+versions. When version ordering is supported, fixes at or below the installed
+version are excluded.
+
+| `finding.fix_evidence.status` | Meaning                                                        |
+| ----------------------------- | -------------------------------------------------------------- |
+| `reported`                    | Applicable fix versions were reported.                         |
+| `no_reported_fix`             | No applicable explicit fix version was reported.               |
+| `unknown`                     | Fix applicability or version ordering could not be determined. |
+
+Unknown ordering preserves reported version strings. An empty collection of fixes
+does not establish that no fix exists. Fix evidence is not an upgrade
+recommendation or a guarantee that later versions are unaffected.
+
+## License policies
 
 ```python
-result = osvpy.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
-packages = {package.id: package for package in result.packages}
-for violation in result.licenses.violations:
-    package = packages[violation.package]
-    print(package.name, violation.licenses, violation.forbidden)
+batch = osvpy.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
+
+for occurrence in batch.images[0].occurrences:
+    assessment = occurrence.license_assessment
+    print(occurrence.package.data.name, assessment.status, assessment.violations)
 ```
 
-| `allowed_licenses`      | Policy                                  |
-| ----------------------- | --------------------------------------- |
-| `None` (default)        | No license checks                       |
-| `{"MIT", "Apache-2.0"}` | Allow matching SPDX license expressions |
-| `set()`                 | Allow no licenses                       |
+`allowed_licenses=None` disables license evaluation. An empty collection allows
+no licenses. Policies support SPDX expressions.
 
-Online only. License violations include packages without vulnerabilities.
-Missing license information is `UNKNOWN` and fails the policy; coverage varies
-by ecosystem. License lookup failures raise `ScanError`.
+License assessment statuses are `not_evaluated`, `compliant`, `noncompliant`,
+and `unknown`. Packages can have license violations without vulnerabilities.
 
-## Archives and offline scans
+## Failures and diagnostics
+
+An acquisition or scan failure produces a failed image result; remaining inputs
+are still scanned. `batch.complete` is false if any image failed.
 
 ```python
-result = osvpy.scan_docker_archive("image.tar", all_packages=True)
-result = osvpy.scan_docker_archive(
-    "image.tar", offline=True, database_path="/srv/osv-db"
-)
+for image_index, diagnostic in batch.errors:
+    print(batch.images[image_index].data.requested)
+    print(diagnostic.code, diagnostic.message)
 ```
 
-Single-image Docker-save archives only; no OCI-layout archives.
-`detail` and `allowed_licenses` are also supported for online archive scans.
+Error codes include `registry_authentication`, `image_not_found`, `invalid_image`,
+`offline_unavailable`, and `scan_error`. Failed images represent unknown results.
+Successful images may also contain diagnostics in `image.data.diagnostics`.
 
-Offline scans require local database ZIPs for each image ecosystem:
-
-```text
-/srv/osv-db/osv-scalibr/Ubuntu/all.zip
-/srv/osv-db/osv-scalibr/Debian/all.zip
-/srv/osv-db/osv-scalibr/PyPI/all.zip
-```
-
-Download: `https://osv-vulnerabilities.storage.googleapis.com/<ecosystem>/all.zip`.
-
-Offline mode: local archives only, no database downloads, no license checks.
-
-## Errors
-
-All library errors derive from `osvpy.OSVError` and expose a `code`.
-Specific exceptions include `ImageNotFoundError`, `RegistryAuthenticationError`,
-`InvalidImageError`, `OfflineDatabaseError`, `ScanError`, and `NativeLibraryError`.
-
-```python
-try:
-    result = osvpy.scan_image("ubuntu:latest")
-except osvpy.RegistryAuthenticationError:
-    print("Check registry credentials and pull permissions")
-except osvpy.OSVError as error:
-    print(error.code, str(error))
-```
+Unsupported offline option combinations raise `OfflineDatabaseError`. Native
+operation failures raise `NativeLibraryError` and abort the batch. Library
+exceptions derive from `osvpy.OSVError`.
