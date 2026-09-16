@@ -10,16 +10,19 @@ from pydantic import BaseModel, computed_field
 
 from ._generated import (
     Advisory,
+    FullScanData,
     LayerMetadata,
     Package,
     PackageInfo,
-    ScanData,
     ScanMetadata,
+    ScanResult,
     SourceInfo,
 )
+from ._generated import NativeResponse as _NativeResponse
 
 __all__ = [
     "Advisory",
+    "FullScanResult",
     "LayerMetadata",
     "Package",
     "PackageInfo",
@@ -112,11 +115,8 @@ class Vulnerability(BaseModel):
         return max(scores) if scores else None
 
 
-class ScanResult(ScanData):
+class FullScanResult(FullScanData):
     """Complete generated result fields plus convenient flattened report views."""
-
-    image: str
-    metadata: ScanMetadata
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
@@ -140,3 +140,7 @@ class ScanResult(ScanData):
             for package in source.packages or []
             for advisory in package.vulnerabilities or []
         ]
+
+
+class NativeResponse(_NativeResponse):
+    result: FullScanResult | None = None

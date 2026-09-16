@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -40,13 +41,15 @@ type registryAuth struct {
 }
 
 type request struct {
-	Image        string        `json:"image"`
-	Source       string        `json:"source"`
-	Offline      bool          `json:"offline"`
-	AllPackages  bool          `json:"all_packages"`
-	Auth         *registryAuth `json:"auth,omitempty"`
-	Platform     string        `json:"platform,omitempty"`
-	DatabasePath string        `json:"database_path,omitempty"`
+	Image           string        `json:"image"`
+	Source          string        `json:"source"`
+	Offline         bool          `json:"offline"`
+	AllPackages     bool          `json:"all_packages"`
+	Auth            *registryAuth `json:"auth,omitempty"`
+	Platform        string        `json:"platform,omitempty"`
+	DatabasePath    string        `json:"database_path,omitempty"`
+	Detail          string        `json:"detail,omitempty"`
+	AllowedLicenses []string      `json:"allowed_licenses,omitempty"`
 }
 
 type nativeError struct {
@@ -66,15 +69,15 @@ type scanMetadata struct {
 }
 
 type response struct {
-	ABIVersion int                          `json:"abi_version"`
-	OK         bool                         `json:"ok"`
-	Result     *models.VulnerabilityResults `json:"result,omitempty"`
-	Error      *nativeError                 `json:"error,omitempty"`
-	Metadata   *scanMetadata                `json:"metadata,omitempty"`
+	ABIVersion int           `json:"abi_version"`
+	OK         bool          `json:"ok"`
+	Result     *fullScanData `json:"result,omitempty"`
+	Report     *scanResult   `json:"report,omitempty"`
+	Error      *nativeError  `json:"error,omitempty"`
 }
 
 func failure(code, message string) response {
-	return response{ABIVersion: 1, Error: &nativeError{Code: code, Message: message}}
+	return response{ABIVersion: 3, Error: &nativeError{Code: code, Message: message}}
 }
 
 // invoke also recovers panics when exercised from Go tests. Panic values are
@@ -86,13 +89,13 @@ func invoke(data []byte) (out []byte) {
 func encodeResponse(run func() response) (out []byte) {
 	defer func() {
 		if recover() != nil {
-			out = []byte(`{"abi_version":1,"ok":false,"error":{"code":"internal_error","message":"Native scanner panicked"}}`)
+			out = []byte(`{"abi_version":3,"ok":false,"error":{"code":"internal_error","message":"Native scanner panicked"}}`)
 		}
 	}()
 	r := run()
 	out, err := json.Marshal(r)
 	if err != nil {
-		return []byte(`{"abi_version":1,"ok":false,"error":{"code":"internal_error","message":"Cannot serialize scanner response"}}`)
+		return []byte(`{"abi_version":3,"ok":false,"error":{"code":"internal_error","message":"Cannot serialize scanner response"}}`)
 	}
 	return out
 }
@@ -114,6 +117,12 @@ func execute(data []byte) response {
 	}
 	if req.Source == "" {
 		req.Source = "registry"
+	}
+	if req.Detail != "" && req.Detail != "compact" && req.Detail != "full" {
+		return failure("invalid_request", "detail must be compact or full")
+	}
+	if req.Offline && req.AllowedLicenses != nil {
+		return failure("offline_unavailable", "License checks require online scanning")
 	}
 	if req.Offline && req.Source == "registry" {
 		return failure("offline_unavailable", "Offline scans require a local Docker archive and a pre-populated database_path")
@@ -192,9 +201,11 @@ func execute(data []byte) response {
 		}
 	}
 	actions := osvscanner.ScannerActions{
-		Image: path, IsImageArchive: true, ShowAllPackages: req.AllPackages,
+		Image: path, IsImageArchive: true, ShowAllPackages: req.AllPackages || req.AllowedLicenses != nil,
 		CompareOffline: req.Offline, PluginNetworkDisabled: req.Offline,
 		LocalDBPath: req.DatabasePath, DownloadDatabases: false,
+		ScanLicensesAllowlist: req.AllowedLicenses,
+		ScanLicensesSummary:   req.AllowedLicenses != nil,
 		ExperimentalScannerActions: osvscanner.ExperimentalScannerActions{
 			RequestUserAgent:   "pyosv/0.1.0",
 			TransitiveScanning: osvscanner.TransitiveScanningActions{Disabled: true},
@@ -209,7 +220,33 @@ func execute(data []byte) response {
 	}
 	metadata.DurationSeconds = time.Since(started).Seconds()
 	metadata.NoPackages = errors.Is(err, osvscanner.ErrNoPackagesFound)
-	return response{ABIVersion: 1, OK: true, Result: &result, Metadata: metadata}
+	if req.AllowedLicenses != nil {
+		// Plugin failures can be nonfatal upstream. Never turn a skipped license
+		// lookup into a successful empty compliance report.
+		for i := range result.Results {
+			for j := range result.Results[i].Packages {
+				pkg := &result.Results[i].Packages[j]
+				if len(pkg.Licenses) == 0 {
+					return failure("scan_error", "License information could not be retrieved for all detected packages")
+				}
+				if len(req.AllowedLicenses) == 0 {
+					pkg.LicenseViolations = slices.Clone(pkg.Licenses)
+				}
+			}
+			if !req.AllPackages {
+				result.Results[i].Packages = slices.DeleteFunc(result.Results[i].Packages, func(p models.PackageVulns) bool {
+					return len(p.Vulnerabilities) == 0 && len(p.LicenseViolations) == 0
+				})
+			}
+		}
+	}
+	resp := response{ABIVersion: 3, OK: true}
+	if req.Detail == "full" {
+		resp.Result = &fullScanData{VulnerabilityResults: result, Image: req.Image, Metadata: *metadata}
+	} else {
+		resp.Report = compactResults(result, req, *metadata)
+	}
+	return resp
 }
 
 func acquisitionError(err error) response {

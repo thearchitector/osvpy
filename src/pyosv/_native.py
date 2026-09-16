@@ -6,9 +6,8 @@ import platform
 import threading
 from importlib.resources import files
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
-from ._generated import NativeResponse
 from .exceptions import (
     ImageNotFoundError,
     InvalidImageError,
@@ -17,6 +16,10 @@ from .exceptions import (
     RegistryAuthenticationError,
     ScanError,
 )
+from .models import NativeResponse
+
+if TYPE_CHECKING:
+    from typing import Any
 
 _ERRORS = {
     "image_not_found": ImageNotFoundError,
@@ -54,14 +57,14 @@ class NativeLibrary:
                 "platform, or build the native library for a source checkout."
             ) from exc
 
-    def call(self, request: dict[str, Any]) -> NativeResponse:
+    def call(self, request: dict[str, "Any"]) -> NativeResponse:
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
         ptr = self._scan(payload)
         try:
             envelope = NativeResponse.model_validate_json(ctypes.string_at(ptr))
         finally:
             self._free(ptr)
-        if envelope.abi_version != 1:
+        if envelope.abi_version != 3:
             raise NativeLibraryError("Unsupported native ABI version")
         if not envelope.ok:
             error = envelope.error
@@ -74,7 +77,7 @@ _instance: NativeLibrary | None = None
 _load_lock = threading.Lock()
 
 
-def scan(request: dict[str, Any]) -> NativeResponse:
+def scan(request: dict[str, "Any"]) -> NativeResponse:
     global _instance
     with _load_lock:
         if _instance is None:

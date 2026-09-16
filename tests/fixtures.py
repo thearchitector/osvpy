@@ -7,13 +7,16 @@ import io
 import json
 import tarfile
 import zipfile
-from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from threading import Thread
+from typing import TYPE_CHECKING
 
-from pyosv import RegistryAuth
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
+    from pyosv import RegistryAuth
 
 
 def _tar(files: dict[str, bytes]) -> bytes:
@@ -27,16 +30,8 @@ def _tar(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def make_fixture(directory: Path) -> tuple[Path, Path]:
-    layer = _tar({
-        "etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n',
-        "var/lib/dpkg/status": (
-            b"Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
-            b"Version: 3.0.0-1\nDescription: synthetic pyosv test package\n\n"
-            b"Package: unaffected\nStatus: install ok installed\nArchitecture: amd64\n"
-            b"Version: 1.0\nDescription: package without findings\n\n"
-        ),
-    })
+def make_image(directory: "Path", files: dict[str, bytes]) -> "Path":
+    layer = _tar(files)
     config = json.dumps({
         "architecture": "amd64",
         "os": "linux",
@@ -57,6 +52,22 @@ def make_fixture(directory: Path) -> tuple[Path, Path]:
     archive = directory / "fixture.tar"
     archive.write_bytes(
         _tar({"manifest.json": manifest, "config.json": config, "layer.tar": layer})
+    )
+    return archive
+
+
+def make_fixture(directory: "Path") -> tuple["Path", "Path"]:
+    archive = make_image(
+        directory,
+        {
+            "etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n',
+            "var/lib/dpkg/status": (
+                b"Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
+                b"Version: 3.0.0-1\nDescription: synthetic pyosv test package\n\n"
+                b"Package: unaffected\nStatus: install ok installed\nArchitecture: amd64\n"
+                b"Version: 1.0\nDescription: package without findings\n\n"
+            ),
+        },
     )
     database = directory / "db"
     ecosystem_dir = database / "osv-scalibr" / "Ubuntu"
@@ -135,9 +146,9 @@ def registry_resources() -> dict[str, bytes]:
 def serve_registry(
     resources: dict[str, bytes],
     *,
-    auth: RegistryAuth | None = None,
+    auth: "RegistryAuth | None" = None,
     status: int | None = None,
-) -> Iterator[str]:
+) -> "Iterator[str]":
     """A real HTTP registry boundary; the scanner and native loader are unmodified."""
     expected_auth = (
         None

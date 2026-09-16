@@ -3,43 +3,22 @@
     "Advisory": {
       "properties": {
         "affected": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Affected"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Affected"
+          },
+          "type": "array"
         },
         "aliases": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "credits": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Credit"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Credit"
+          },
+          "type": "array"
         },
         "database_specific": {
           "additionalProperties": true,
@@ -58,62 +37,34 @@
           "type": "string"
         },
         "references": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Reference"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Reference"
+          },
+          "type": "array"
         },
         "related": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "schema_version": {
           "type": "string"
         },
         "severity": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Severity"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Severity"
+          },
+          "type": "array"
         },
         "summary": {
           "type": "string"
         },
         "upstream": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "withdrawn": {
           "type": "string"
@@ -150,43 +101,22 @@
           "$ref": "#/$defs/AffectedPackage"
         },
         "ranges": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Range"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Range"
+          },
+          "type": "array"
         },
         "severity": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Severity"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Severity"
+          },
+          "type": "array"
         },
         "versions": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"
@@ -248,17 +178,10 @@
     "Credit": {
       "properties": {
         "contact": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "name": {
           "type": "string"
@@ -334,6 +257,75 @@
       "required": [
         "Plugin",
         "Justification"
+      ],
+      "type": "object"
+    },
+    "FullScanData": {
+      "properties": {
+        "experimental_config": {
+          "$ref": "#/$defs/ExperimentalAnalysisConfig"
+        },
+        "experimental_generic_findings": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/GenericFinding"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "image": {
+          "type": "string"
+        },
+        "image_metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "license_summary": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/LicenseCount"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/ScanMetadata"
+        },
+        "results": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/PackageSource"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "results",
+        "experimental_config",
+        "image",
+        "metadata"
       ],
       "type": "object"
     },
@@ -490,17 +482,10 @@
           "anyOf": [
             {
               "items": {
-                "anyOf": [
-                  {
-                    "items": {
-                      "$ref": "#/$defs/BaseImageDetails"
-                    },
-                    "type": "array"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "items": {
+                  "$ref": "#/$defs/BaseImageDetails"
+                },
+                "type": "array"
               },
               "type": "array"
             },
@@ -582,6 +567,52 @@
       ],
       "type": "object"
     },
+    "LicenseReport": {
+      "properties": {
+        "allowed_licenses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "violations": {
+          "items": {
+            "$ref": "#/$defs/LicenseViolation"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "allowed_licenses",
+        "violations"
+      ],
+      "type": "object"
+    },
+    "LicenseViolation": {
+      "properties": {
+        "forbidden": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "licenses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "package": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "package",
+        "licenses",
+        "forbidden"
+      ],
+      "type": "object"
+    },
     "NativeError": {
       "properties": {
         "code": {
@@ -612,23 +643,23 @@
             }
           ]
         },
-        "metadata": {
+        "ok": {
+          "type": "boolean"
+        },
+        "report": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ScanMetadata"
+              "$ref": "#/$defs/ScanResult"
             },
             {
               "type": "null"
             }
           ]
         },
-        "ok": {
-          "type": "boolean"
-        },
         "result": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ScanData"
+              "$ref": "#/$defs/FullScanData"
             },
             {
               "type": "null"
@@ -751,6 +782,24 @@
       ],
       "type": "object"
     },
+    "PackageFinding": {
+      "properties": {
+        "fixed_versions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "fixed_versions"
+      ],
+      "type": "object"
+    },
     "PackageInfo": {
       "properties": {
         "commit": {
@@ -827,6 +876,36 @@
       ],
       "type": "object"
     },
+    "PackageSummary": {
+      "properties": {
+        "ecosystem": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "installed_version": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "vulnerabilities": {
+          "items": {
+            "$ref": "#/$defs/PackageFinding"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "installed_version",
+        "ecosystem",
+        "vulnerabilities"
+      ],
+      "type": "object"
+    },
     "Range": {
       "properties": {
         "database_specific": {
@@ -834,17 +913,10 @@
           "type": "object"
         },
         "events": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/Event"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "items": {
+            "$ref": "#/$defs/Event"
+          },
+          "type": "array"
         },
         "repo": {
           "type": "string"
@@ -864,67 +936,6 @@
           "type": "string"
         }
       },
-      "type": "object"
-    },
-    "ScanData": {
-      "properties": {
-        "experimental_config": {
-          "$ref": "#/$defs/ExperimentalAnalysisConfig"
-        },
-        "experimental_generic_findings": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/GenericFinding"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "image_metadata": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ImageMetadata"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "license_summary": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/LicenseCount"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "results": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/PackageSource"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "results",
-        "experimental_config"
-      ],
       "type": "object"
     },
     "ScanMetadata": {
@@ -964,6 +975,45 @@
       ],
       "type": "object"
     },
+    "ScanResult": {
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "licenses": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LicenseReport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "metadata": {
+          "$ref": "#/$defs/ScanMetadata"
+        },
+        "packages": {
+          "items": {
+            "$ref": "#/$defs/PackageSummary"
+          },
+          "type": "array"
+        },
+        "vulnerabilities": {
+          "items": {
+            "$ref": "#/$defs/VulnerabilitySummary"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "image",
+        "metadata",
+        "vulnerabilities",
+        "packages"
+      ],
+      "type": "object"
+    },
     "Severity": {
       "properties": {
         "score": {
@@ -978,6 +1028,36 @@
       },
       "type": "object"
     },
+    "SeveritySummary": {
+      "properties": {
+        "rating": {
+          "enum": [
+            "unknown",
+            "none",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "type": "string"
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "score",
+        "rating"
+      ],
+      "type": "object"
+    },
     "SourceInfo": {
       "properties": {
         "path": {
@@ -990,6 +1070,35 @@
       "required": [
         "path",
         "type"
+      ],
+      "type": "object"
+    },
+    "VulnerabilitySummary": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "packages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "severity": {
+          "$ref": "#/$defs/SeveritySummary"
+        }
+      },
+      "required": [
+        "id",
+        "aliases",
+        "severity",
+        "packages"
       ],
       "type": "object"
     }

@@ -1,12 +1,15 @@
 import json
-from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import pytest
 
-from pyosv import ScanResult, Vulnerability
+from pyosv import FullScanResult, Vulnerability
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
-def test_finding_identifies_installed_package(report: ScanResult) -> None:
+def test_finding_identifies_installed_package(report: FullScanResult) -> None:
     assert [
         (v.id, v.package, v.installed_version, v.ecosystem)
         for v in report.vulnerabilities
@@ -16,7 +19,7 @@ def test_finding_identifies_installed_package(report: ScanResult) -> None:
     ]
 
 
-def test_finding_attributes_source_and_layer(report: ScanResult) -> None:
+def test_finding_attributes_source_and_layer(report: FullScanResult) -> None:
     assert [(v.source.path, v.layer) for v in report.vulnerabilities] == [
         ("var/lib/dpkg/status", "sha256:layer"),
         ("app/requirements.txt", "sha256:second"),
@@ -34,7 +37,7 @@ def test_finding_attributes_source_and_layer(report: ScanResult) -> None:
     ids=["no-fix", "one-fix", "duplicate-fix", "branch-fixes"],
 )
 def test_fix_summary(
-    finding_factory: Callable[..., Vulnerability],
+    finding_factory: "Callable[..., Vulnerability]",
     events: list[dict[str, str]],
     versions: list[str],
     single: str | None,
@@ -61,7 +64,7 @@ def test_fix_summary(
     ids=["no-package", "other-name", "other-ecosystem"],
 )
 def test_fixes_exclude_other_packages(
-    finding_factory: Callable[..., Vulnerability], package: dict[str, str] | None
+    finding_factory: "Callable[..., Vulnerability]", package: dict[str, str] | None
 ) -> None:
     finding = finding_factory(
         affected=[{"package": package, "ranges": [{"events": [{"fixed": "99"}]}]}]
@@ -98,7 +101,7 @@ def test_fixes_exclude_other_packages(
     ids=["absent", "unknown", "malformed", "cvss2", "cvss3", "cvss4"],
 )
 def test_severity_summary(
-    finding_factory: Callable[..., Vulnerability],
+    finding_factory: "Callable[..., Vulnerability]",
     severity: list[dict[str, str]],
     expected: float | None,
 ) -> None:
@@ -107,7 +110,7 @@ def test_severity_summary(
 
 
 def test_severity_uses_highest_available_score(
-    finding_factory: Callable[..., Vulnerability],
+    finding_factory: "Callable[..., Vulnerability]",
 ) -> None:
     finding = finding_factory(
         severity=[
@@ -121,17 +124,31 @@ def test_severity_uses_highest_available_score(
     assert finding.severity == pytest.approx(9.8)
 
 
-def test_report_contains_summary_and_advisory_details(report: ScanResult) -> None:
+def test_report_contains_summary_and_advisory_details(report: FullScanResult) -> None:
     finding = json.loads(report.model_dump_json())["vulnerabilities"][0]
     assert finding["fixed_version"] == "1.1"
     assert finding["advisory"]["credits"][0]["name"] == "Researcher"
     assert finding["advisory"]["modified"] == "2026-02-02T00:00:00.123456789Z"
 
 
-def test_compact_report_retains_source_findings(report: ScanResult) -> None:
+def test_full_report_can_omit_duplicated_views(report: FullScanResult) -> None:
     data = json.loads(report.model_dump_json(exclude_computed_fields=True))
     assert "vulnerabilities" not in data
     assert "packages" not in data
     assert (
         data["sources"][0]["packages"][0]["vulnerabilities"][0]["id"] == "TEST-2026-1"
     )
+
+
+def test_saved_full_report_preserves_nested_layer_attribution(
+    report: FullScanResult,
+) -> None:
+    saved = report.model_dump_json(exclude_computed_fields=True)
+    restored = FullScanResult.model_validate_json(saved)
+    finding = Vulnerability.model_validate(
+        restored.vulnerabilities[0].model_dump(exclude_computed_fields=True)
+    )
+    assert finding.installed.image_origin.layer_index == 0
+    assert finding.layer == "sha256:layer"
+    assert finding.source.path == "var/lib/dpkg/status"
+    assert finding.id == "TEST-2026-1"

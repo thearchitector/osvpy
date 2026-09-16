@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/google/go-containerregistry v0.21.8
+	github.com/google/osv-scalibr v0.5.3-0.20260911142458-3090dbb7aaa2
 	github.com/google/osv-scanner/v2 v2.6.0
 	github.com/invopop/jsonschema v0.13.0
 	github.com/ossf/osv-schema/bindings/go v0.0.0-20260902031056-b388a18021a3
@@ -73,7 +74,6 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/gobwas/glob v0.2.3 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
-	github.com/google/osv-scalibr v0.5.3-0.20260911142458-3090dbb7aaa2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/ianlancetaylor/demangle v0.0.0-20260724033716-83e58baca724 // indirect
 	github.com/icholy/digest v1.2.0 // indirect

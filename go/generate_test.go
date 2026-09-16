@@ -107,7 +107,8 @@ func generateSchema(t *testing.T, path string) {
 	for name, definition := range definitions {
 		schema["$defs"].(map[string]any)[name] = definition
 	}
-	// Unlike reflection's default, encoding/json permits null Go pointer fields.
+	// encoding/json permits null pointers and nil upstream slices. Walk embedded
+	// fields in their containing schema; our own report collections are non-null.
 	seen := map[reflect.Type]bool{}
 	var pointers func(reflect.Type)
 	pointers = func(typ reflect.Type) {
@@ -124,45 +125,31 @@ func generateSchema(t *testing.T, path string) {
 			return
 		}
 		properties := definition["properties"].(map[string]any)
-		for i := range typ.NumField() {
-			field := typ.Field(i)
-			name := strings.Split(field.Tag.Get("json"), ",")[0]
-			if !field.IsExported() || name == "-" {
-				continue
+		var fields func(reflect.Type)
+		fields = func(owner reflect.Type) {
+			for i := range owner.NumField() {
+				field := owner.Field(i)
+				name := strings.Split(field.Tag.Get("json"), ",")[0]
+				if !field.IsExported() || name == "-" {
+					continue
+				}
+				if field.Anonymous && field.Type.Kind() == reflect.Struct {
+					fields(field.Type)
+					continue
+				}
+				if name == "" {
+					name = field.Name
+				}
+				if field.Type.Kind() == reflect.Pointer ||
+					field.Type.Kind() == reflect.Slice && owner.PkgPath() != reflect.TypeFor[response]().PkgPath() {
+					properties[name] = map[string]any{"anyOf": []any{properties[name], map[string]any{"type": "null"}}}
+				}
+				pointers(field.Type)
 			}
-			if name == "" {
-				name = field.Name
-			}
-			if field.Type.Kind() == reflect.Pointer {
-				properties[name] = map[string]any{"anyOf": []any{properties[name], map[string]any{"type": "null"}}}
-			}
-			pointers(field.Type)
 		}
+		fields(typ)
 	}
 	pointers(reflect.TypeFor[response]())
-	// encoding/json also emits null for nil Go slices, including nested slices.
-	var nullableSlices func(any)
-	nullableSlices = func(value any) {
-		switch value := value.(type) {
-		case map[string]any:
-			for _, child := range value {
-				nullableSlices(child)
-			}
-			if value["type"] == "array" {
-				array := map[string]any{}
-				for key, child := range value {
-					array[key] = child
-					delete(value, key)
-				}
-				value["anyOf"] = []any{array, map[string]any{"type": "null"}}
-			}
-		case []any:
-			for _, child := range value {
-				nullableSlices(child)
-			}
-		}
-	}
-	nullableSlices(schema)
 	encoded, err = json.MarshalIndent(schema, "", "  ")
 	if err != nil {
 		t.Fatal(err)

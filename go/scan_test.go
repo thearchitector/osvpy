@@ -65,7 +65,7 @@ func offlineRequest(t *testing.T, version string) []byte {
 	if err := os.WriteFile(filepath.Join(dbDir, "all.zip"), zipped.Bytes(), 0600); err != nil {
 		t.Fatal(err)
 	}
-	input, err := json.Marshal(request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir})
+	input, err := json.Marshal(request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir, Detail: "full"})
 	if err != nil {
 		t.Fatal(err)
 	}

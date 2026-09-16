@@ -2,10 +2,26 @@
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import _native
-from .models import RegistryAuth, ScanResult
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+    from typing import Any, Literal, TypedDict, Unpack, overload
+
+    from .models import FullScanResult, RegistryAuth, ScanResult
+
+    class _ScanOptions(TypedDict, total=False):
+        offline: bool
+        all_packages: bool
+        allowed_licenses: Collection[str] | None
+        database_path: str | os.PathLike[str] | None
+
+    class _ImageOptions(_ScanOptions, total=False):
+        auth: RegistryAuth | None
+        platform: str | None
+
 
 logger = logging.getLogger("pyosv")
 
@@ -16,16 +32,23 @@ def _scan(
     *,
     offline: bool,
     all_packages: bool,
-    auth: RegistryAuth | None = None,
+    detail: "Literal['compact', 'full']",
+    allowed_licenses: "Collection[str] | None",
+    auth: "RegistryAuth | None" = None,
     platform: str | None = None,
     database_path: str | os.PathLike[str] | None = None,
-) -> ScanResult:
+) -> "ScanResult | FullScanResult":
+    if detail not in ("compact", "full"):
+        raise ValueError("detail must be compact or full")
     request: dict[str, Any] = {
         "image": image,
         "source": source,
         "offline": offline,
         "all_packages": all_packages,
+        "detail": detail,
     }
+    if allowed_licenses is not None:
+        request["allowed_licenses"] = sorted(allowed_licenses)
     if auth is not None:
         request["auth"] = {"username": auth.username, "password": auth.password}
     if platform is not None:
@@ -33,19 +56,26 @@ def _scan(
     if database_path is not None:
         request["database_path"] = os.fspath(database_path)
     envelope = _native.scan(request)
-    assert envelope.result is not None
-    assert envelope.metadata is not None
-    # Already validated in one JSON parse. Reuse the nested models without copying.
-    result = ScanResult.model_construct(
-        image=image, metadata=envelope.metadata, **envelope.result.__dict__
-    )
-    logger.debug(
-        "Scan completed: %d packages, %d findings, duration=%s seconds",
-        len(result.packages),
-        len(result.vulnerabilities),
-        result.metadata.duration_seconds,
-    )
+    result = envelope.result if detail == "full" else envelope.report
+    assert result is not None
+    logger.debug("Scan completed in %s seconds", result.metadata.duration_seconds)
     return result
+
+
+if TYPE_CHECKING:
+
+    @overload
+    def scan_image(
+        image: str,
+        *,
+        detail: Literal["compact"] = "compact",
+        **options: Unpack[_ImageOptions],
+    ) -> ScanResult: ...
+
+    @overload
+    def scan_image(
+        image: str, *, detail: Literal["full"], **options: Unpack[_ImageOptions]
+    ) -> FullScanResult: ...
 
 
 def scan_image(
@@ -53,10 +83,12 @@ def scan_image(
     *,
     offline: bool = False,
     all_packages: bool = False,
-    auth: RegistryAuth | None = None,
+    detail: "Literal['compact', 'full']" = "compact",
+    allowed_licenses: "Collection[str] | None" = None,
+    auth: "RegistryAuth | None" = None,
     platform: str | None = None,
     database_path: str | os.PathLike[str] | None = None,
-) -> ScanResult:
+) -> "ScanResult | FullScanResult":
     """Pull and scan a Linux image directly from an OCI registry.
 
     Tags, digests and explicit basic registry credentials are supported. The
@@ -68,10 +100,31 @@ def scan_image(
         "registry",
         offline=offline,
         all_packages=all_packages,
+        detail=detail,
+        allowed_licenses=allowed_licenses,
         auth=auth,
         platform=platform,
         database_path=database_path,
     )
+
+
+if TYPE_CHECKING:
+
+    @overload
+    def scan_docker_archive(
+        path: str | os.PathLike[str],
+        *,
+        detail: Literal["compact"] = "compact",
+        **options: Unpack[_ScanOptions],
+    ) -> ScanResult: ...
+
+    @overload
+    def scan_docker_archive(
+        path: str | os.PathLike[str],
+        *,
+        detail: Literal["full"],
+        **options: Unpack[_ScanOptions],
+    ) -> FullScanResult: ...
 
 
 def scan_docker_archive(
@@ -79,13 +132,17 @@ def scan_docker_archive(
     *,
     offline: bool = False,
     all_packages: bool = False,
+    detail: "Literal['compact', 'full']" = "compact",
+    allowed_licenses: "Collection[str] | None" = None,
     database_path: str | os.PathLike[str] | None = None,
-) -> ScanResult:
+) -> "ScanResult | FullScanResult":
     """Scan a single-image Docker save archive; never invokes Docker."""
     return _scan(
         os.fspath(path),
         "docker_archive",
         offline=offline,
         all_packages=all_packages,
+        detail=detail,
+        allowed_licenses=allowed_licenses,
         database_path=database_path,
     )

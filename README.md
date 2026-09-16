@@ -1,15 +1,6 @@
 # pyosv
 
-Scan container images for vulnerabilities in Python. Built on OSV-Scanner.
-
-It supports:
-
-- Docker Hub and other OCI registries, by tag or digest
-- anonymous access and explicit registry credentials
-- Linux image platform selection
-- Docker-save archives and offline vulnerability databases
-- typed findings with package, advisory, fix, severity, and image-layer information
-- JSON reports and custom output formats
+Container image vulnerability and license reports for Python.
 
 Requires Python 3.13+ on Linux, WSL, or macOS 13+, on x86_64 or arm64.
 
@@ -29,30 +20,34 @@ import pyosv
 result = pyosv.scan_image("ubuntu:latest")
 
 for vuln in result.vulnerabilities:
-    print(
-        vuln.id, vuln.package, vuln.installed_version, vuln.fixed_version, vuln.severity
-    )
+    print(vuln.id, vuln.severity.score, vuln.severity.rating, vuln.packages)
+
+for package in result.packages:
+    for finding in package.vulnerabilities:
+        print(
+            package.name, package.installed_version, finding.id, finding.fixed_versions
+        )
 ```
 
 ## Scanning images
 
-Use `all_packages=True` to include packages without findings, and `platform` to
-select the image architecture:
-
 ```python
-result = pyosv.scan_image("python:3.12-slim", all_packages=True, platform="linux/arm64")
+result = pyosv.scan_image("ubuntu:latest")  # Anonymous Docker Hub access
+result = pyosv.scan_image("ghcr.io/org/project:tag")
+result = pyosv.scan_image("registry.example.com/team/app@sha256:...")
+
+result = pyosv.scan_image(
+    "python:3.12-slim",
+    all_packages=True,  # Include packages without findings
+    platform="linux/arm64",  # Default: linux/amd64
+)
+
+print(result.metadata.image_digest)
 ```
 
-Image references accept Docker Hub shorthand, full registry paths, tags, and
-`@sha256:...` digests. The default platform is `linux/amd64`.
-`result.metadata.image_digest` contains the resolved manifest digest.
-
-Calls are synchronous. Concurrent scans are serialized; cancellation is not supported.
+Linux container images; registry tags and digests. Synchronous scans; no cancellation.
 
 ## Registry authentication
-
-Omit `auth` for anonymous access. For private registries or authenticated Docker
-Hub pulls, pass a username and password or access token:
 
 ```python
 import os
@@ -67,74 +62,92 @@ result = scan_image(
 )
 ```
 
-Credentials must be supplied explicitly; Docker and AWS credentials are not
-discovered automatically.
-
-### Amazon ECR
-
-Decode the `authorizationToken` returned by ECR's `GetAuthorizationToken` API
-and pass the resulting username and password as ordinary registry credentials:
-
-```python
-import base64
-import os
-from pyosv import RegistryAuth, scan_image
-
-username, password = (
-    base64
-    .b64decode(os.environ["ECR_AUTHORIZATION_TOKEN"])
-    .decode("utf-8")
-    .split(":", 1)
-)
-
-result = scan_image(
-    "123456789012.dkr.ecr.us-east-1.amazonaws.com/app:latest",
-    auth=RegistryAuth(username=username, password=password),
-)
-```
+Explicit credentials only; no automatic credential discovery.
 
 ## Results and reports
 
-`ScanResult` and its nested records are Pydantic models.
+Compact reports by default:
 
-| Field                     | Contents                                                                  |
-| ------------------------- | ------------------------------------------------------------------------- |
-| `result.vulnerabilities`  | Flat findings with installed-package context and report properties        |
-| `result.packages`         | Package identities, advisories, dependency groups, licenses, and analysis |
-| `result.sources`          | Packages grouped by source, with exploitability signals                   |
-| `result.image_metadata`   | Image OS, layers, and base-image groups                                   |
-| `result.metadata`         | Scan options, duration, scanner version, and image identity               |
-| `result.generic_findings` | Additional non-package findings                                           |
-| `result.license_summary`  | License counts                                                            |
-| `result.analysis_config`  | Analysis settings                                                         |
-
-Each finding exposes `advisory`, `installed`, `source`, and `image_layer`.
-The advisory includes affected ranges, references, credits, aliases, original
-severity assessments, and timestamps. Timestamps retain RFC 3339 precision.
-
-`severity` is the highest available CVSS v2/v3/v4 base score, or `None`.
-`fixed_versions` contains explicit fixes for the installed package.
-`fixed_version` is populated only when there is one distinct fix.
-
-Filter findings and choose your own report fields:
+| Field                    | Contents                                                                    |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `result.vulnerabilities` | Unique vulnerability groups: ID, aliases, severity, affected package IDs    |
+| `result.packages`        | Package ID, name, installed version, ecosystem, and vulnerability/fix pairs |
+| `result.metadata`        | Scanner version, image digest/platform, scan options, and duration          |
+| `result.licenses`        | Requested allowlist and violations, or `None` when not requested            |
 
 ```python
-import json
+result = pyosv.scan_image("ubuntu:latest")
 
-report = [
-    {"id": v.id, "package": v.package, "installed": v.installed_version}
-    for v in result.vulnerabilities
-    if v.severity is not None and v.severity >= 9
-]
-print(json.dumps(report, indent=2))
+report = result.model_dump()
+print(result.model_dump_json(indent=2))
+
+critical = [v for v in result.vulnerabilities if v.severity.rating == "critical"]
+
+packages = {package.id: package for package in result.packages}
+for vuln in critical:
+    print(vuln.id, vuln.aliases, vuln.severity.score)
+    for package_id in vuln.packages:
+        package = packages[package_id]
+        print(package.name, package.installed_version)
 ```
 
-Use `result.model_dump()` for a dictionary or `result.model_dump_json()` for JSON.
-To export all source-grouped data without duplicating the flattened views:
+Vulnerabilities are grouped by aliases, with CVE identifiers preferred. Severity
+is the highest reported CVSS score; unavailable scores are `None` / `unknown`.
+Ratings: `none`, `low`, `medium`, `high`, `critical`, `unknown`.
+
+Fix versions are per package and vulnerability. An empty list means no reported
+fix; multiple versions may belong to different release branches.
+
+### Full details
 
 ```python
-print(result.model_dump_json(indent=2, exclude_computed_fields=True))
+full = pyosv.scan_image("ubuntu:latest", detail="full")
+for finding in full.vulnerabilities:
+    print(finding.id, finding.package, finding.installed_version, finding.fixed_version)
+    print(finding.advisory, finding.source, finding.image_layer)
+
+print(full.model_dump_json(indent=2, exclude_computed_fields=True))
 ```
+
+Includes:
+
+- advisories
+- affected ranges
+- references
+- credits
+- timestamps
+- severity
+- assessments
+- source paths
+- layers
+- analysis
+- license metadata
+
+`full.sources` groups packages and advisories by source; `full.packages` and
+`full.vulnerabilities` provide flattened views.
+
+Full-report fix versions include advisory events for the exact package/ecosystem;
+compact reports filter fixes against the installed version where supported.
+
+### License policy
+
+```python
+result = pyosv.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
+packages = {package.id: package for package in result.packages}
+for violation in result.licenses.violations:
+    package = packages[violation.package]
+    print(package.name, violation.licenses, violation.forbidden)
+```
+
+| `allowed_licenses`      | Policy                                  |
+| ----------------------- | --------------------------------------- |
+| `None` (default)        | No license checks                       |
+| `{"MIT", "Apache-2.0"}` | Allow matching SPDX license expressions |
+| `set()`                 | Allow no licenses                       |
+
+Online only. License violations include packages without vulnerabilities.
+Missing license information is `UNKNOWN` and fails the policy; coverage varies
+by ecosystem. License lookup failures raise `ScanError`.
 
 ## Archives and offline scans
 
@@ -145,9 +158,10 @@ result = pyosv.scan_docker_archive(
 )
 ```
 
-Archives must use the single-image Docker-save format. OCI-layout archives are
-not supported. Offline scans require a local archive and pre-populated OSV
-database ZIPs for the image's ecosystems:
+Single-image Docker-save archives only; no OCI-layout archives.
+`detail` and `allowed_licenses` are also supported for online archive scans.
+
+Offline scans require local database ZIPs for each image ecosystem:
 
 ```text
 /srv/osv-db/osv-scalibr/Ubuntu/all.zip
@@ -155,10 +169,9 @@ database ZIPs for the image's ecosystems:
 /srv/osv-db/osv-scalibr/PyPI/all.zip
 ```
 
-Database exports are available at
-`https://osv-vulnerabilities.storage.googleapis.com/<ecosystem>/all.zip`.
-Offline mode disables vulnerability-service access and database downloads;
-remote image references cannot be scanned offline.
+Download: `https://osv-vulnerabilities.storage.googleapis.com/<ecosystem>/all.zip`.
+
+Offline mode: local archives only, no database downloads, no license checks.
 
 ## Errors
 

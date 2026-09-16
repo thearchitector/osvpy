@@ -697,7 +697,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "datamodel-code-generator", specifier = "==0.55.0" },
+    { name = "datamodel-code-generator" },
     { name = "pytest", specifier = ">=9.0.0" },
     { name = "pytest-cov" },
     { name = "pytest-crap" },

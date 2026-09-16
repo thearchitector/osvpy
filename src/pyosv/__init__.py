@@ -9,11 +9,12 @@ from .exceptions import (
     RegistryAuthenticationError,
     ScanError,
 )
-from .models import RegistryAuth, ScanResult, Vulnerability
+from .models import FullScanResult, RegistryAuth, ScanResult, Vulnerability
 from .scanner import scan_docker_archive, scan_image
 
 __version__ = "0.1.0"
 __all__ = [
+    "FullScanResult",
     "ImageNotFoundError",
     "InvalidImageError",
     "NativeLibraryError",

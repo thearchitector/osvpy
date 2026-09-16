@@ -1,6 +1,6 @@
 repos:
     - repo: https://github.com/astral-sh/ruff-pre-commit
-      rev: v0.16.5
+      rev: v0.16.7
       hooks:
           - id: ruff-check
             args:
@@ -18,6 +18,18 @@ repos:
             types: [python]
             require_serial: true
             pass_filenames: false
+          - id: go-fix
+            name: go-fix
+            language: system
+            entry: go -C go fix ./...
+            types: [go]
+            pass_filenames: false
+            require_serial: true
+          - id: go-fmt
+            name: go-fmt
+            language: system
+            entry: gofmt -w -s
+            types: [go]
     - repo: builtin
       hooks:
           - id: end-of-file-fixer
