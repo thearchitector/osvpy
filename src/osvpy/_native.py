@@ -61,9 +61,10 @@ class NativeLibrary:
         payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
         ptr = self._scan(payload)
         try:
-            envelope = NativeResponse.model_validate_json(ctypes.string_at(ptr))
+            response = ctypes.string_at(ptr)
         finally:
             self._free(ptr)
+        envelope = NativeResponse.model_validate_json(response)
         if envelope.abi_version != 3:
             raise NativeLibraryError("Unsupported native ABI version")
         if not envelope.ok:
@@ -74,14 +75,14 @@ class NativeLibrary:
 
 
 _instance: NativeLibrary | None = None
-_load_lock = threading.Lock()
+_scan_lock = threading.Lock()
 
 
 def scan(request: dict[str, "Any"]) -> NativeResponse:
     global _instance
-    with _load_lock:
+    # Bound transient memory across native scanning, encoding and Python
+    # validation, not just the upstream scan protected by the Go logger mutex.
+    with _scan_lock:
         if _instance is None:
             _instance = NativeLibrary()
-        native = _instance
-    # CDLL releases the GIL; the Go mutex protects the upstream global logger.
-    return native.call(request)
+        return _instance.call(request)

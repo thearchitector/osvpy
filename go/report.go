@@ -65,7 +65,15 @@ type licenseViolation struct {
 
 func unique(values []string) []string {
 	slices.Sort(values)
-	return slices.Compact(values)
+	values = slices.Compact(values)
+	// Release occurrence-sized storage after heavy deduplication. Avoid the
+	// extra allocation for small or mostly unique collections.
+	if cap(values) >= 64 && cap(values)/4 > len(values) {
+		trimmed := make([]string, len(values))
+		copy(trimmed, values)
+		return trimmed
+	}
+	return values
 }
 
 func rating(score *float64) string {
@@ -138,19 +146,27 @@ func compactResults(result models.VulnerabilityResults, req request, metadata sc
 					Ecosystem: info.Ecosystem, Vulnerabilities: []packageFinding{}}
 				packages[key] = p
 			}
-			for _, group := range pkg.Groups {
+			var singleGroup [1][]string
+			groupFixes := singleGroup[:]
+			if len(pkg.Groups) != 1 {
+				groupFixes = make([][]string, len(pkg.Groups))
+			}
+			packageFixes(pkg, groupFixes)
+			for groupIndex, group := range pkg.Groups {
 				id := ids[group.IDs[0]]
 				v := vulns[id]
 				if v == nil {
 					v = &vulnerabilitySummary{ID: id, Aliases: []string{}, Packages: []string{}}
 					vulns[id] = v
 				}
-				v.Packages = append(v.Packages, key)
+				if len(v.Packages) == 0 || v.Packages[len(v.Packages)-1] != key {
+					v.Packages = append(v.Packages, key)
+				}
 				if score, err := strconv.ParseFloat(group.MaxSeverity, 64); err == nil &&
 					(v.Severity.Score == nil || score > *v.Severity.Score) {
 					v.Severity.Score = &score
 				}
-				fixes := packageFixes(pkg, group.IDs)
+				fixes := groupFixes[groupIndex]
 				idx := slices.IndexFunc(p.Vulnerabilities, func(f packageFinding) bool { return f.ID == id })
 				if idx < 0 {
 					p.Vulnerabilities = append(p.Vulnerabilities, packageFinding{ID: id, FixedVersions: fixes})
@@ -178,12 +194,14 @@ func compactResults(result models.VulnerabilityResults, req request, metadata sc
 			v.Aliases = append(v.Aliases, alias)
 		}
 	}
+	report.Vulnerabilities = make([]vulnerabilitySummary, 0, len(vulns))
 	for _, v := range vulns {
 		slices.Sort(v.Aliases)
 		v.Packages = unique(v.Packages)
 		v.Severity.Rating = rating(v.Severity.Score)
 		report.Vulnerabilities = append(report.Vulnerabilities, *v)
 	}
+	report.Packages = make([]packageSummary, 0, len(packages))
 	for _, p := range packages {
 		slices.SortFunc(p.Vulnerabilities, func(a, b packageFinding) int { return strings.Compare(a.ID, b.ID) })
 		report.Packages = append(report.Packages, *p)
@@ -191,7 +209,7 @@ func compactResults(result models.VulnerabilityResults, req request, metadata sc
 	slices.SortFunc(report.Vulnerabilities, func(a, b vulnerabilitySummary) int { return strings.Compare(a.ID, b.ID) })
 	slices.SortFunc(report.Packages, func(a, b packageSummary) int { return strings.Compare(a.ID, b.ID) })
 	if req.AllowedLicenses != nil {
-		report.Licenses = &licenseReport{AllowedLicenses: unique(slices.Clone(req.AllowedLicenses)), Violations: []licenseViolation{}}
+		report.Licenses = &licenseReport{AllowedLicenses: unique(slices.Clone(req.AllowedLicenses)), Violations: make([]licenseViolation, 0, len(violations))}
 		for _, l := range violations {
 			l.Licenses, l.Forbidden = unique(l.Licenses), unique(l.Forbidden)
 			report.Licenses.Violations = append(report.Licenses.Violations, *l)
@@ -204,11 +222,38 @@ func compactResults(result models.VulnerabilityResults, req request, metadata sc
 // Report explicit fix events for this package, using Scalibr's ecosystem-aware
 // ordering to exclude fixes older than the installed version. This is advisory
 // presentation, not a second vulnerability matcher or an upgrade recommendation.
-func packageFixes(pkg models.PackageVulns, ids []string) []string {
-	fixes := []string{}
+func packageFixes(pkg models.PackageVulns, fixes [][]string) {
+	for i := range fixes {
+		fixes[i] = []string{}
+	}
+	if len(pkg.Groups) == 0 {
+		return
+	}
+	// A single group needs no index. Otherwise route each advisory to its
+	// original groups, including overlapping groups and repeated advisory IDs.
+	var groupsByID map[string][]int
+	if len(pkg.Groups) > 1 {
+		groupsByID = make(map[string][]int)
+		for i, group := range pkg.Groups {
+			for _, id := range group.IDs {
+				members := groupsByID[id]
+				if len(members) == 0 || members[len(members)-1] != i {
+					groupsByID[id] = append(members, i)
+				}
+			}
+		}
+	}
 	installed, parseErr := semantic.Parse(pkg.Package.Version, pkg.Package.Ecosystem)
 	for _, advisory := range pkg.Vulnerabilities {
-		if !slices.Contains(ids, advisory.GetId()) {
+		var groups []int
+		if len(pkg.Groups) == 1 {
+			if slices.Contains(pkg.Groups[0].IDs, advisory.GetId()) {
+				groups = []int{0}
+			}
+		} else {
+			groups = groupsByID[advisory.GetId()]
+		}
+		if len(groups) == 0 {
 			continue
 		}
 		for _, affected := range advisory.GetAffected() {
@@ -230,10 +275,14 @@ func packageFixes(pkg models.PackageVulns, ids []string) []string {
 							continue
 						}
 					}
-					fixes = append(fixes, fix)
+					for _, group := range groups {
+						fixes[group] = append(fixes[group], fix)
+					}
 				}
 			}
 		}
 	}
-	return unique(fixes)
+	for i := range fixes {
+		fixes[i] = unique(fixes[i])
+	}
 }

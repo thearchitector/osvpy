@@ -52,6 +52,8 @@ print(result.metadata.image_digest)
 ```
 
 Linux container images; registry tags and digests. Synchronous scans; no cancellation.
+Calls within one Python process are serialized through result validation to limit
+peak memory. Concurrent callers wait, including while a previous result is decoded.
 
 ## Registry authentication
 

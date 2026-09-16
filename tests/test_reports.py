@@ -124,6 +124,35 @@ def test_severity_uses_highest_available_score(
     assert finding.severity == pytest.approx(9.8)
 
 
+def test_computed_properties_reflect_advisory_mutations(
+    finding_factory: "Callable[..., Vulnerability]",
+) -> None:
+    finding = finding_factory(
+        affected=[
+            {
+                "package": {"name": "openssl", "ecosystem": "Ubuntu:24.04"},
+                "ranges": [{"events": [{"fixed": "1.1"}, {"fixed": "1.1"}]}],
+            }
+        ],
+        severity=[{"type": "CVSS_V2", "score": "AV:N/AC:L/Au:N/C:P/I:P/A:P"}],
+    )
+    assert finding.fixed_version == "1.1"
+    assert finding.severity == pytest.approx(7.5)
+    assert finding.advisory.affected is not None
+    ranges = finding.advisory.affected[0].ranges
+    assert ranges is not None
+    assert ranges[0].events is not None
+    ranges[0].events[1].fixed = "2.1"
+    assert finding.fixed_version is None
+    assert finding.fixed_versions == ["1.1", "2.1"]
+    assert finding.advisory.severity is not None
+    finding.advisory.severity[0].score = "invalid"
+    assert finding.severity is None
+    finding.installed.name = "other"
+    assert finding.fixed_versions == []
+    assert finding.fixed_version is None
+
+
 def test_report_contains_summary_and_advisory_details(report: FullScanResult) -> None:
     finding = json.loads(report.model_dump_json())["vulnerabilities"][0]
     assert finding["fixed_version"] == "1.1"
