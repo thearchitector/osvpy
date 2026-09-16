@@ -125,6 +125,26 @@ Unknown ordering preserves reported version strings. An empty collection of fixe
 does not establish that no fix exists. Fix evidence is not an upgrade
 recommendation or a guarantee that later versions are unaffected.
 
+## Memory usage
+
+Result memory depends on the number of packages, findings, and distinct advisory
+facts. Scanning related images in one batch can use less result memory than
+keeping separate scan results, particularly when the images share packages and
+vulnerabilities.
+
+In a synthetic benchmark with 2,000 package occurrences per image:
+
+| Workload                                                  | Memory retained by results |
+| --------------------------------------------------------- | -------------------------: |
+| One image                                                 |                   ~1.7 MiB |
+| Ten images with fully overlapping packages and advisories |                   ~3.3 MiB |
+| Ten images with partial overlap                           |                  ~10.7 MiB |
+| Ten images with no overlap                                |                  ~17.3 MiB |
+
+These figures measure retained results, not total process memory or peak memory
+during a scan. Image scanning and vulnerability databases require additional
+memory.
+
 ## License policies
 
 ```python
