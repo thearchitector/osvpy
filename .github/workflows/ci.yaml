@@ -43,7 +43,9 @@ jobs:
             - name: Run integration tests
               run: uv run --no-sync pytest -m integration
 
-            - name: Run Go tests
+            # Standalone race detection is required even when Python tests pass;
+            # a race-instrumented shared library cannot initialize on all hosts.
+            - name: Run standalone Go race tests
               working-directory: go
               run: go test -mod=readonly -race ./...
 

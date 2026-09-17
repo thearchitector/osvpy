@@ -18,15 +18,17 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	scalibrlog "github.com/google/osv-scalibr/log"
+	scalibrconfig "github.com/google/osv-scalibr/plugin/config"
 	"github.com/google/osv-scanner/v2/pkg/models"
 	"github.com/google/osv-scanner/v2/pkg/osvscanner"
 )
 
 const scannerVersion = "2.6.0"
 
-// Upstream SetLogger replaces process-global mutable state. Serialize scans so
-// log routing and upstream logger state cannot bleed between Python callers.
-var scanMu sync.Mutex
+// The bundled Go runtime owns logging configuration for its lifetime. Do not
+// install osvscanner.SetLogger: its wrapper mutates error state during scans.
+var loggerOnce sync.Once
 
 type registryAuth struct {
 	Username string `json:"username"`
@@ -72,6 +74,12 @@ func failure(code, message string) response {
 }
 
 func execute(req request) (out response) {
+	return executeWithConfig(req, nil)
+}
+
+// Per-call dependencies allow hermetic network tests without replacing global
+// HTTP clients or loggers while other scans are running.
+func executeWithConfig(req request, config *scalibrconfig.PluginConfig) (out response) {
 	var ref name.Reference
 	var platform *v1.Platform
 	if req.Source == "registry" {
@@ -88,7 +96,10 @@ func execute(req request) (out response) {
 		}
 	}
 
-	osvscanner.SetLogger(slog.NewTextHandler(io.Discard, nil))
+	loggerOnce.Do(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+		scalibrlog.SetLogger(discardLogger{})
+	})
 	started := time.Now()
 	path := req.Image
 	metadata := &scanMetadata{ScannerVersion: scannerVersion, Source: req.Source,
@@ -164,13 +175,14 @@ func execute(req request) (out response) {
 		metadata.ImagePlatform = config.OS + "/" + config.Architecture
 	}
 	actions := osvscanner.ScannerActions{
-		Image: path, IsImageArchive: true, ShowAllPackages: req.AllPackages || req.AllowedLicenses != nil,
+		Image: path, IsImageArchive: true, ShowAllPackages: req.Offline || req.AllPackages || req.AllowedLicenses != nil,
 		CompareOffline: req.Offline, PluginNetworkDisabled: req.Offline,
 		LocalDBPath: req.DatabasePath, DownloadDatabases: false,
 		ScanLicensesAllowlist: req.AllowedLicenses,
 		ScanLicensesSummary:   req.AllowedLicenses != nil,
 		RequestUserAgent:      "osvpy/0.1.0",
 		TransitiveScanning:    osvscanner.TransitiveScanningActions{Disabled: true},
+		ScalibrConfig:         config,
 	}
 	result, err := osvscanner.DoContainerScan(actions)
 	if err != nil && !errors.Is(err, osvscanner.ErrVulnerabilitiesFound) && !errors.Is(err, osvscanner.ErrNoPackagesFound) {
@@ -181,6 +193,18 @@ func execute(req request) (out response) {
 	}
 	metadata.DurationSeconds = time.Since(started).Seconds()
 	metadata.NoPackages = errors.Is(err, osvscanner.ErrNoPackagesFound)
+	if req.Offline {
+		if err := validateOfflineDatabases(req.DatabasePath, result); err != nil {
+			return failure("offline_unavailable", err.Error())
+		}
+		if !req.AllPackages {
+			for i := range result.Results {
+				result.Results[i].Packages = slices.DeleteFunc(result.Results[i].Packages, func(p models.PackageVulns) bool {
+					return len(p.Vulnerabilities) == 0 && len(p.LicenseViolations) == 0 && !p.Package.Deprecated
+				})
+			}
+		}
+	}
 	if req.AllowedLicenses != nil {
 		// Plugin failures can be nonfatal upstream. Never turn a skipped license
 		// lookup into a successful empty compliance report.

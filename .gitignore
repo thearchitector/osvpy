@@ -8,6 +8,7 @@ __pycache__
 .coverage*
 
 dist/
+wheelhouse/
 src/osvpy/_lib/
 
-benchmarks/**/*.json
+/experiments/

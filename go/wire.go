@@ -33,6 +33,8 @@ func guard(status *C.int) {
 }
 
 type nativeBatch struct {
+	// A handle has one owner; operations on it must remain sequential.
+	// Independent handles share no builder or output allocation.
 	builder *batchBuilder
 	req     request
 }
@@ -45,15 +47,7 @@ func osv_batch_begin(input *C.char, out *C.uintptr_t) (status C.int) {
 	if err := json.Unmarshal([]byte(C.GoString(input)), &req); err != nil {
 		panic(err)
 	}
-	scanMu.Lock()
-	success := false
-	defer func() {
-		if !success {
-			scanMu.Unlock()
-		}
-	}()
 	*out = C.uintptr_t(cgo.NewHandle(&nativeBatch{newBuilder(), req}))
-	success = true
 	return 0
 }
 
@@ -75,7 +69,6 @@ func osv_batch_abort(handle C.uintptr_t) (status C.int) {
 	b := h.Value().(*nativeBatch)
 	b.builder = nil
 	h.Delete()
-	scanMu.Unlock()
 	return 0
 }
 

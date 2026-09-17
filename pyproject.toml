@@ -42,15 +42,15 @@ markers = ["integration: requires public registry and vulnerability database acc
 
 [tool.mypy]
 explicit_package_bases = true
-files = ["src/osvpy", "tests"]
+files = ["src/osvpy", "tests", "explore_toolkit"]
 strict = true
 mypy_path = ["src"]
-exclude = [ "benchmarks" ]
+exclude = ["explore_toolkit/experiments", "explore_toolkit/results", "experiments"]
 
 [tool.ruff]
 unsafe-fixes = false
 extend-include = ["README.md"]
-extend-exclude = ["benchmarks"]
+extend-exclude = ["explore_toolkit/experiments", "explore_toolkit/results", "experiments"]
 
 [tool.ruff.lint]
 extend-select = ["ANN", "ASYNC", "PYI", "PT", "SIM", "TC", "TID", "PERF", "TRY", "PGH003"]

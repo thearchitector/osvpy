@@ -82,12 +82,13 @@ class NativeLibrary:
 
 
 _instance: NativeLibrary | None = None
-_scan_lock = threading.Lock()
+_init_lock = threading.Lock()
 
 
 def scan(inputs: tuple[str, ...], request: dict[str, "Any"]) -> BatchResult:
     global _instance
-    with _scan_lock:
+    with _init_lock:
         if _instance is None:
             _instance = NativeLibrary()
-        return _instance.call(inputs, request)
+        instance = _instance
+    return instance.call(inputs, request)

@@ -119,18 +119,35 @@ internal request JSON round trip.
 3. `osv_batch_finish` finalizes normalization and encodes into a C allocation.
 4. Python copies that buffer, decodes records, and builds indexes.
 5. Python's `finally` releases the C buffer and calls `osv_batch_abort` to dispose
-   of the handle and release native admission, on success as well as failure.
+   of the handle, on success as well as failure.
 
 No Go pointers escape to Python. Returned views own Python data and need no
 close operation. The native writer streams directly into a growable C allocation
 to avoid keeping a complete Go output buffer alongside its C copy. Allocation
 failures and uint32 representation limits remain checked.
 
-Python admission covers the complete call, including decoding. Go admission
-protects upstream process-global logger state. Logging is suppressed for normal
-scans. Cancellation can be observed between native calls; the library does not
-provide cancellation inside an active scanner call. A batch does not promise a
-single immutable database snapshot.
+Python locks only native-library initialization and publishes the instance after
+successful initialization. Independent calls own independent native handles,
+builders, output allocations, and decoded stores. Calls may overlap; operations
+within each handle and images within each batch remain sequential. There is no
+internal scheduler or concurrency cap. Callers choose executor worker counts to
+bound active scans and memory use. Cancellation can be observed between native
+calls; there is no interruption inside an active scanner call.
+
+The bundled Go runtime owns its logging configuration. A `sync.Once` installs a
+standard discard `slog` handler and a stateless SCALIBR logger. OSV-Scanner's
+mutable logger wrapper must never be installed, even once: concurrent error
+logging races inside it.
+
+Offline calls request full inventory internally, then validate each required
+ecosystem ZIP once per image using the pinned matcher's normalization and skip
+rules. Missing, unreadable, or structurally invalid archives produce an
+`offline_unavailable` slot with no partial findings. Validation includes ZIP
+checksums but does not validate every advisory's semantics. Successful scans
+restore the requested inventory filtering and metadata. Empty images require no
+ecosystem archive. Database files must remain unchanged during active scans;
+database hot replacement, shared-handle concurrent mutation, free-threaded Python,
+and parallel images within a batch are outside the supported concurrency model.
 
 ## Python store and views
 
@@ -180,15 +197,15 @@ not redundant store validation. Python runtime/codec errors propagate directly.
 ## Tradeoffs supported by measurements
 
 Use retained report memory and construction peak separately; neither is a proxy
-for whole-scanner RSS. Stored measurements and workload definitions are in
-[benchmarks/PRODUCTION_REPORT.md](benchmarks/PRODUCTION_REPORT.md) and
-[benchmarks/production_results.json](benchmarks/production_results.json). Those
-are historical snapshots, including the validation state at measurement time.
+for whole-scanner RSS. Reusable workloads and measurement helpers live in
+[explore_toolkit](explore_toolkit/README.md). Experiment scripts, results, and
+reports stay in its gitignored `experiments/` directory. Historical prototypes
+and measurement artifacts are no longer maintained in the working tree.
 
 Exploratory Python 3.13 comparisons used the same synthetic workloads: 2,000
 occurrences per image, with varying cross-image package/advisory overlap. These
 design-review comparisons used separate temporary prototypes; the production
-benchmark harness does not reproduce the alternative implementations. The
+toolkit does not reproduce the alternative implementations. The
 following alternatives were evaluated and rejected:
 
 | Alternative | Observed retained Python memory tradeoff | Code tradeoff |
@@ -220,8 +237,8 @@ installed library during editable development.
 ```bash
 uv sync --group dev --group local
 uv sync --group dev --group local --reinstall-package osvpy
-uv run --no-sync ruff check src/osvpy tests
-uv run --no-sync mypy src/osvpy tests
+uv run --no-sync ruff check src/osvpy tests explore_toolkit
+uv run --no-sync mypy src/osvpy tests explore_toolkit
 uv run --no-sync pytest
 go -C go test -race ./...
 uv build
@@ -233,18 +250,14 @@ Do not test private lock state, ctypes call sequences, allocation strategies,
 builder maps, exact encoded bytes, or packed layout. Test external boundaries with
 synthetic archives, local registries, and controlled advisory inputs.
 
-Memory instrumentation belongs in benchmark harnesses, not assertions about
-private implementation in the behavioral suite. The production store benchmark
-decodes native fixtures through the private transport decoder and measures
-retention and traversal; it does not expose or measure a public serialization API:
+Memory instrumentation belongs in exploratory tools, not assertions about private
+implementation in the behavioral suite. [explore_toolkit](explore_toolkit/README.md)
+provides image/database/registry fixtures, configurable upstream reports, isolated
+native builds, and fresh-process timing and retention helpers. Its report adapter
+uses the private transport decoder; this is not a public serialization API.
 
-```bash
-uv run --no-sync python -m benchmarks.production_store --output /tmp/production.json
-uv run --no-sync python -m benchmarks.native_memory --mode gated --scans 64 --details-mib 4
-```
-
-Production measurements include the final record schema and derived indexes.
-Historical experiments under `benchmarks/result_store` are comparison material,
-not supported APIs. Go heap checkpoints, Python allocation peaks, C capacity,
-untraced timings, and RSS are different metrics; do not combine them into an
-unmeasured scan-wide savings claim.
+Only reusable tools are maintained. Keep scripts, prototype implementations,
+results, and reports in `explore_toolkit/experiments/`, which is gitignored.
+Go heap checkpoints, Python allocation peaks, C capacity, untraced timings, and
+RSS are different metrics; do not combine them into an unmeasured scan-wide
+savings claim.

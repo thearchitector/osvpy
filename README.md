@@ -86,6 +86,12 @@ The database directory must contain the relevant OSV database ZIPs, such as
 `/srv/osv-db/osv-scalibr/Ubuntu/all.zip`. Offline scans do not download databases
 or use the network. Registry scans and license checks require online mode.
 
+A missing, unreadable, or invalid required ZIP produces an `offline_unavailable`
+failed image slot, discards that image's partial findings, and allows later images
+to continue. This also applies when `all_packages=False`. Empty images require no
+ecosystem ZIP. Validation checks archive structure and checksums, not every
+advisory record. Keep database files unchanged throughout active scans.
+
 ## Read results
 
 Results are read-only. Package, vulnerability, advisory, and image fields are

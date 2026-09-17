@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 import pytest
 
 import osvpy
-from tests.fixtures import make_fixture, make_image, registry_resources, serve_registry
+from explore_toolkit.images import (
+    make_fixture,
+    make_image,
+    registry_resources,
+    serve_registry,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

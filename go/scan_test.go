@@ -32,19 +32,10 @@ func fixtureTar(t *testing.T, files map[string][]byte) []byte {
 func offlineRequest(t *testing.T, version string) request {
 	t.Helper()
 	dir := t.TempDir()
-	layer := fixtureTar(t, map[string][]byte{
+	path := fixtureImage(t, dir, map[string][]byte{
 		"etc/os-release":      []byte("ID=ubuntu\nVERSION_ID=24.04\n"),
 		"var/lib/dpkg/status": []byte(fmt.Sprintf("Package: openssl\nStatus: install ok installed\nArchitecture: amd64\nVersion: %s\nDescription: fixture\n\n", version)),
 	})
-	config := fmt.Sprintf(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:%x"]},"history":[{"created_by":"fixture"}],"config":{}}`, sha256.Sum256(layer))
-	archive := fixtureTar(t, map[string][]byte{
-		"config.json": []byte(config), "layer.tar": layer,
-		"manifest.json": []byte(`[{"Config":"config.json","RepoTags":["fixture:latest"],"Layers":["layer.tar"]}]`),
-	})
-	path := filepath.Join(dir, "fixture.tar")
-	if err := os.WriteFile(path, archive, 0600); err != nil {
-		t.Fatal(err)
-	}
 	dbDir := filepath.Join(dir, "osv-scalibr", "Ubuntu")
 	if err := os.MkdirAll(dbDir, 0700); err != nil {
 		t.Fatal(err)
@@ -67,6 +58,21 @@ func offlineRequest(t *testing.T, version string) request {
 	return request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir}
 }
 
+func fixtureImage(t *testing.T, dir string, files map[string][]byte) string {
+	t.Helper()
+	layer := fixtureTar(t, files)
+	config := fmt.Sprintf(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:%x"]},"history":[{"created_by":"fixture"}],"config":{}}`, sha256.Sum256(layer))
+	archive := fixtureTar(t, map[string][]byte{
+		"config.json": []byte(config), "layer.tar": layer,
+		"manifest.json": []byte(`[{"Config":"config.json","RepoTags":["fixture:latest"],"Layers":["layer.tar"]}]`),
+	})
+	path := filepath.Join(dir, "fixture.tar")
+	if err := os.WriteFile(path, archive, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // Exercise concurrent native requests under the Go race detector. Python's
 // functional tests cover reporting/options; the standalone stress script covers
 // repeated calls and memory growth.
@@ -75,8 +81,6 @@ func TestConcurrentScansKeepInstalledVersionsSeparate(t *testing.T) {
 		input := offlineRequest(t, version)
 		t.Run(version, func(t *testing.T) {
 			t.Parallel()
-			scanMu.Lock()
-			defer scanMu.Unlock()
 			result := execute(input)
 			if result.Error != nil {
 				t.Fatalf("scan failed: %+v", result.Error)
