@@ -1,0 +1,14 @@
+# New files are local scratch work unless explicitly promoted into this toolkit.
+/*
+!/.gitignore
+!/README.md
+!/__init__.py
+!/images.py
+!/measure.py
+!/processes.py
+!/native.py
+!/reports.py
+!/report_driver_test.go
+!/data/
+/data/*
+!/data/complete_response.json

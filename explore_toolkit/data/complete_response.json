@@ -1,0 +1,59 @@
+{
+  "metadata": {
+    "scanner_version": "2.6.0", "source": "registry", "offline": false,
+    "all_packages": true, "image_digest": "sha256:manifest", "image_platform": "linux/amd64",
+    "duration_seconds": 1.25, "no_packages": false
+  },
+  "result": {
+    "results": [{
+      "source": {"path": "var/lib/dpkg/status", "type": "os"},
+      "experimental_pes": [{"Plugin": "package-annotator", "Justification": 2, "VulnIdentifiers": ["CVE-excluded"], "MatchesAllVulns": false}],
+      "packages": [{
+        "package": {
+          "name": "openssl", "os_package_name": "libssl", "version": "1.0", "ecosystem": "Ubuntu:24.04",
+          "commit": "package-commit", "deprecated": true, "image_origin_details": {"index": 0}
+        },
+        "dependency_groups": ["production"],
+        "licenses": ["Apache-2.0"], "license_violations": ["GPL-3.0"],
+        "groups": [{
+          "ids": ["TEST-2026-1"], "aliases": ["TEST-2026-1", "CVE-alias"], "max_severity": "9.8",
+          "experimental_analysis": {"TEST-2026-1": {"called": true, "unimportant": false}}
+        }],
+        "vulnerabilities": [{
+          "schema_version": "1.7.4", "id": "TEST-2026-1",
+          "published": "2026-01-01T00:00:00Z", "modified": "2026-02-02T00:00:00.123456789Z", "withdrawn": "2026-03-03T00:00:00Z",
+          "aliases": ["CVE-alias"], "related": ["related-advisory"], "upstream": ["parent-advisory"],
+          "summary": "Advisory summary", "details": "Detailed advisory description",
+          "affected": [{
+            "package": {"name": "openssl", "ecosystem": "Ubuntu:24.04", "purl": "pkg:deb/ubuntu/openssl@1.0"},
+            "ranges": [{
+              "type": "ECOSYSTEM", "repo": "https://example.com/repository",
+              "events": [{"introduced": "0"}, {"fixed": "1.1"}, {"last_affected": "1.0.9"}, {"limit": "2.0"}],
+              "database_specific": {"range_note": "range extension"}
+            }],
+            "versions": ["1.0", "1.0.1"],
+            "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "source": "NVD"}],
+            "ecosystem_specific": {"urgency": "high", "nested": {"flag": true, "items": [null, 2, 1.5]}},
+            "database_specific": {"affected_note": "affected extension"}
+          }],
+          "references": [{"type": "ADVISORY", "url": "https://example.com/advisory"}],
+          "database_specific": {"reviewed": true, "advisory_note": "advisory extension"},
+          "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", "source": "NVD"}],
+          "credits": [{"name": "Researcher", "contact": ["https://example.com/researcher"], "type": "FINDER"}]
+        }]
+      }]
+    }],
+    "experimental_config": {"licenses": {"summary": true, "allowlist": ["MIT"]}},
+    "experimental_generic_findings": [{
+      "Adv": {"ID": {"Publisher": "publisher", "Reference": "generic-id"}, "Title": "Generic title", "Description": "Generic description", "Recommendation": "Generic remediation", "Sev": 4},
+      "Target": {"Extra": "target details"}, "Plugins": ["generic-detector"],
+      "ExploitabilitySignals": [{"Plugin": "finding-annotator", "Justification": 5}]
+    }],
+    "image_metadata": {
+      "os": "Ubuntu 24.04",
+      "layer_metadata": [{"diff_id": "sha256:layer", "command": "RUN install", "is_empty": false, "base_image_index": 0}],
+      "base_images": [[{"name": "ubuntu", "tags": ["24.04", "latest"]}]]
+    },
+    "license_summary": [{"name": "Apache-2.0", "count": 1}]
+  }
+}
