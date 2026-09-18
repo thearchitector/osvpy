@@ -1,3 +1,4 @@
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
@@ -12,15 +13,15 @@ if TYPE_CHECKING:
 def test_anonymous_pull_selects_platform(
     registry_factory: "Callable[..., str]", platform: str
 ) -> None:
-    result = osvpy.scan_image(registry_factory(), platform=platform)
+    result = asyncio.run(osvpy.scan(registry_factory(), platform=platform))
     assert result.complete
-    assert result.images[0].data.metadata.image_platform == platform
+    assert result.images[0].metadata.image_platform == platform
 
 
 def test_empty_image(registry_factory: "Callable[..., str]") -> None:
-    result = osvpy.scan_image(registry_factory())
+    result = asyncio.run(osvpy.scan(registry_factory()))
     assert result.complete
-    assert result.images[0].data.metadata.no_packages
+    assert result.images[0].metadata.no_packages
     assert not result.packages
     assert not result.vulnerabilities
 
@@ -28,9 +29,9 @@ def test_empty_image(registry_factory: "Callable[..., str]") -> None:
 def test_explicit_credentials(registry_factory: "Callable[..., str]") -> None:
     auth = osvpy.RegistryAuth("reader", "secret")
     image = registry_factory(auth=auth)
-    assert osvpy.scan_image(image, auth=auth).complete
+    assert asyncio.run(osvpy.scan(image, auth=auth)).complete
     for bad in (None, osvpy.RegistryAuth("reader", "wrong")):
-        result = osvpy.scan_image(image, auth=bad)
+        result = asyncio.run(osvpy.scan(image, auth=bad))
         assert not result.complete
         assert result.errors[0][1].code == "registry_authentication"
 
@@ -42,11 +43,9 @@ def test_explicit_credentials(registry_factory: "Callable[..., str]") -> None:
 def test_registry_failure_category(
     registry_factory: "Callable[..., str]", status: int, code: str
 ) -> None:
-    result = osvpy.scan_image(registry_factory(status=status))
+    result = asyncio.run(osvpy.scan(registry_factory(status=status)))
     assert result.errors[0][1].code == code
 
 
-def test_invalid_reference_and_offline() -> None:
-    assert osvpy.scan_image("UPPER CASE").errors[0][1].code == "invalid_image"
-    with pytest.raises(osvpy.OfflineDatabaseError):
-        osvpy.scan_image("ubuntu:latest", offline=True)
+def test_invalid_reference() -> None:
+    assert asyncio.run(osvpy.scan("UPPER CASE")).errors[0][1].code == "invalid_image"

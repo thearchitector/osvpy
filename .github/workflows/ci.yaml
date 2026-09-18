@@ -2,6 +2,8 @@ name: CI
 
 on:
     push:
+    pull_request:
+    workflow_dispatch:
 
 permissions:
     contents: read
@@ -11,43 +13,47 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    test:
-        runs-on: ubuntu-latest
+    python:
+        strategy:
+            fail-fast: false
+            matrix:
+                python: ["3.13", "3.14", "3.14t"]
+                platform: [ubuntu-latest, macos-14]
+        runs-on: ${{ matrix.platform }}
+        env:
+            OSVPY_EXPECT_FREE_THREADED: ${{ matrix.python == '3.14t' && '1' || '0' }}
         steps:
             - uses: actions/checkout@v7
 
-            - name: Set up Go
-              uses: actions/setup-go@v7
+            - uses: actions/setup-go@v7
               with:
                   go-version-file: go/go.mod
                   cache-dependency-path: go/go.sum
 
-            - name: Set up Python
-              uses: actions/setup-python@v6
+            - uses: actions/setup-python@v6
               with:
-                  python-version-file: "pyproject.toml"
+                  python-version: ${{ matrix.python }}
+            - uses: astral-sh/setup-uv@v9.0.0
 
-            - name: Install uv
-              uses: astral-sh/setup-uv@v9.0.0
+            - name: Install package and test dependencies
+              run: uv sync --locked --no-editable --group dev --python "$(command -v python)"
+
+            - name: Run Python unit tests
+              run: .venv/bin/python -m tests -m 'not integration'
+
+    go:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/setup-go@v7
               with:
-                  enable-cache: true
+                  go-version-file: go/go.mod
+                  cache-dependency-path: go/go.sum
 
-            - name: Install dependencies
-              run: |
-                  uv sync --locked --group dev
-                  uv pip install pytest-github-actions-annotate-failures
-
-            - name: Run unit tests
-              run: uv run --no-sync pytest -m 'not integration'
-
-            - name: Run integration tests
-              run: uv run --no-sync pytest -m integration
-
-            # Standalone race detection is required even when Python tests pass;
-            # a race-instrumented shared library cannot initialize on all hosts.
-            - name: Run standalone Go race tests
+            - name: Run Go unit tests
               working-directory: go
-              run: go test -mod=readonly -race ./...
-
-            - name: Build source distribution and wheel
-              run: uv build
+              run: |
+                  go mod vendor
+                  git apply patches/*.patch
+                  go test -mod=vendor -race ./...

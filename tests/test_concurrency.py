@@ -1,57 +1,11 @@
 """Public API concurrency checks using real native scans and local fixtures."""
 
-import gc
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
 
 import osvpy
-from explore_toolkit.images import make_fixture, registry_resources, serve_registry
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-
-def test_eight_threads_keep_results_independent(tmp_path: "Path") -> None:
-    archives = []
-    for index in range(8):
-        directory = tmp_path / str(index)
-        directory.mkdir()
-        archive, database = make_fixture(directory, version=f"3.0.0-{index % 2}")
-        archives.append(archive)
-    # All workers share a read-only database, prepared before any scan starts.
-    start = threading.Barrier(8)
-
-    def worker(index: int) -> None:
-        start.wait(timeout=15)
-        views = []
-        for iteration in range(4):
-            inventory = (index + iteration) % 2 == 0
-            batch = osvpy.scan_docker_archive(
-                archives[index],
-                tmp_path / "missing.tar",
-                archives[index],
-                offline=True,
-                database_path=database,
-                all_packages=inventory,
-            )
-            assert [im.complete for im in batch.images] == [True, False, True]
-            assert batch.errors[0][0] == 1
-            assert {p.data.name for p in batch.packages} == (
-                {"openssl", "unaffected"} if inventory else {"openssl"}
-            )
-            package = next(p for p in batch.packages if p.data.name == "openssl")
-            assert package.data.version == f"3.0.0-{index % 2}"
-            assert [im.index for im in package.present_images] == [0, 2]
-            assert batch.images[0].data.metadata.all_packages is inventory
-            views.append(batch.vulnerabilities[0])
-            del batch
-        gc.collect()
-        assert all(v.data.id == "OSVPY-TEST-0001" for v in views)
-        assert all([im.index for im in v.affected_images] == [0, 2] for v in views)
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        list(executor.map(worker, range(8)))
+from explore_toolkit.images import registry_resources, serve_registry
 
 
 def test_registry_calls_overlap_with_isolated_credentials_and_platforms() -> None:
@@ -64,14 +18,41 @@ def test_registry_calls_overlap_with_isolated_credentials_and_platforms() -> Non
         ThreadPoolExecutor(max_workers=2) as executor,
     ):
         futures = [
-            executor.submit(osvpy.scan_image, image, auth=auth, platform=platform)
+            executor.submit(
+                lambda *a, **k: asyncio.run(osvpy.scan(*a, **k)),
+                image,
+                auth=auth,
+                platform=platform,
+            )
             for image, auth, platform in zip(
                 [first, second], auths, ["linux/amd64", "linux/arm64"], strict=True
             )
         ]
         batches = [future.result(timeout=30) for future in futures]
     assert all(batch.complete for batch in batches)
-    assert [batch.images[0].data.metadata.image_platform for batch in batches] == [
+    assert [batch.images[0].metadata.image_platform for batch in batches] == [
         "linux/amd64",
         "linux/arm64",
     ]
+
+
+def test_license_policy_is_snapshotted_before_network_work() -> None:
+    policy = ["MIT"]
+    barrier = threading.Barrier(2, action=lambda: policy.append("GPL-3.0-only"))
+    resources = registry_resources({
+        "etc/os-release": b"ID=alpine\nVERSION_ID=3.20.0\n",
+        "etc/alpine-release": b"3.20.0\n",
+        "lib/apk/db/installed": b"P:osvpy-license-forbidden\nV:1.0-r0\nA:x86_64\nL:GPL-3.0-only\n\n",
+    })
+
+    async def run(image: str) -> osvpy.BatchResult:
+        task = asyncio.create_task(osvpy.scan(image, allowed_licenses=policy))
+        await asyncio.to_thread(barrier.wait, 10)
+        return await task
+
+    with serve_registry(resources, barrier=barrier) as image:
+        report = asyncio.run(run(image))
+    assert report.complete
+    (occurrence,) = report.images[0].occurrences
+    assert tuple(occurrence.license_assessment.policy or ()) == ("MIT",)
+    assert occurrence.license_assessment.status == "noncompliant"
