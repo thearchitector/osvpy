@@ -1,21 +1,12 @@
-"""Configurable upstream reports and an adapter to the current native report format."""
+"""Configurable upstream responses for native reporting experiments."""
 
 import copy
 import hashlib
 import json
-import os
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from osvpy import BatchResult
-from osvpy._store import decode
-
-from .native import bridge_workspace
-
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from typing import Any
 
 
@@ -93,70 +84,6 @@ def upstream_image(
     data["result"]["results"][0]["packages"] = records
     digest = "sha256:" + hashlib.sha256(f"image-{image}".encode()).hexdigest()
     data["result"]["image_metadata"]["layer_metadata"][0]["diff_id"] = digest
-    data["metadata"].update(
-        image_digest=digest, source="docker_archive", duration_seconds=0
-    )
-    data["request"] = {
-        "image": f"image-{image}",
-        "source": "docker_archive",
-        "all_packages": True,
-    }
+    data["metadata"].update(image_digest=digest, duration_seconds=0)
+    data["request"] = {"image": f"image-{image}", "all_packages": True}
     return data
-
-
-def materialize_reports(
-    images: "Iterable[dict[str, Any]]",
-    output: Path,
-    *,
-    independent: bool = False,
-    timeout: float = 300,
-) -> tuple[list[Path], dict[str, object]]:
-    """Project inputs using a temporary copy of the current Go bridge.
-
-    A failed input can be supplied as {"request": {"image": ...}, "error":
-    {"code": "scan_error", "message": ...}}. Outputs are private wire fixtures,
-    not a supported interchange format. Use a fresh output directory per case.
-    Fixture generation, input serialization, and Go compilation are not timed.
-    """
-    output = output.resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="osvpy-inputs-") as directory:
-        inputs = []
-        for index, image in enumerate(images):
-            path = Path(directory) / f"{index}.json"
-            path.write_text(json.dumps(image))
-            inputs.append(str(path))
-        spec = Path(directory) / "spec.json"
-        spec.write_text(
-            json.dumps({
-                "inputs": inputs,
-                "output": str(output),
-                "independent": independent,
-            })
-        )
-        driver = Path(__file__).with_name("report_driver_test.go")
-        with bridge_workspace(extra_files=[driver]) as workspace:
-            subprocess.run(
-                [
-                    "go",
-                    "test",
-                    "-mod=readonly",
-                    "-run",
-                    "^TestExploreReports$",
-                    "-count=1",
-                ],
-                cwd=workspace,
-                env=os.environ | {"OSVPY_EXPLORE_SPEC": str(spec)},
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout,
-            )
-    stats = json.loads((output / "native.json").read_text())
-    count = len(inputs) if independent else 1
-    return [output / f"report-{index}.msgpack" for index in range(count)], stats
-
-
-def load_report(path: Path) -> BatchResult:
-    """Decode a current native fixture for public-view traversal/retention probes."""
-    return BatchResult(decode(path.read_bytes()))

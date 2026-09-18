@@ -8,6 +8,36 @@ import (
 	"testing"
 )
 
+func TestAliasesRetainPackageSpecificFixes(t *testing.T) {
+	r := fixture(t, fixturePackage)
+	other := fixture(t, strings.ReplaceAll(fixturePackage, "example", "other")).Results[0].Packages[0]
+	other.Package.Version = "2.0"
+	other.Vulnerabilities[0].Id = "B"
+	other.Vulnerabilities[0].Aliases = []string{"A"}
+	r.Results[0].Packages = append(r.Results[0].Packages, other)
+	b := newBuilder()
+	b.add(request{Image: "fixture"}, response{Result: r})
+	out := b.finish()
+	if len(out.Vulnerabilities) != 1 || len(out.Findings) != 2 {
+		t.Fatal("aliases must group without dropping package findings")
+	}
+	for i, want := range [][]string{{"2.0", "3.0"}, {"3.0"}} {
+		fix := out.Findings[i].Fix
+		if !reflect.DeepEqual(out.Fixes[fix].Versions, want) {
+			t.Fatalf("package %d fixes: %v", i, out.Fixes[fix])
+		}
+	}
+}
+
+func TestSeverityPreservesSourceAndVector(t *testing.T) {
+	vector := "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+	r := fixture(t, strings.Replace(fixturePackage, `"id":"A"`, `"id":"A","severity":[{"type":"CVSS_V3","source":"NVD","score":"`+vector+`"}]`, 1))
+	a := projectAdvisory(r.Results[0].Packages[0].Vulnerabilities[0])
+	if len(a.Severities) != 1 || a.Severities[0] != (reportSeverity{"CVSS_V3", "NVD", vector}) {
+		t.Fatalf("lost severity provenance: %+v", a.Severities)
+	}
+}
+
 func fixture(t testing.TB, raw string) models.VulnerabilityResults {
 	t.Helper()
 	var p models.PackageVulns
@@ -69,6 +99,25 @@ func TestEmptyAndAllFailed(t *testing.T) {
 	r = b.finish()
 	if r.Images[0].Status != "failed" || len(r.Findings) != 0 {
 		t.Fatal("failed")
+	}
+}
+
+func TestUnknownLicenseAndAbsentAssessment(t *testing.T) {
+	r := fixture(t, `{"package":{"name":"example","version":"1.0","ecosystem":"PyPI"}}`)
+	b := newBuilder()
+	b.add(request{Image: "unknown", AllowedLicenses: []string{}, AllPackages: true}, response{Result: r})
+	b.add(request{Image: "disabled", AllPackages: true}, response{Result: r})
+	out := b.finish()
+	unknown := out.Licenses[out.Occurrences[0].License]
+	disabled := out.Licenses[out.Occurrences[1].License]
+	if unknown.Status != "unknown" || len(unknown.Licenses) != 0 || unknown.Policy == nil {
+		t.Fatalf("missing licenses must remain unknown: %+v", unknown)
+	}
+	if disabled.Status != "not_evaluated" || disabled.Policy != nil {
+		t.Fatalf("absent evaluation must remain distinct: %+v", disabled)
+	}
+	if len(out.Images[0].Diagnostics) != 1 || out.Images[0].Diagnostics[0].Code != "unknown_license" {
+		t.Fatal("missing uncertainty diagnostic")
 	}
 }
 func TestDistroSourceAndExtensionFacts(t *testing.T) {

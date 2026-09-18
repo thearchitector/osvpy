@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "scanner_version": "2.6.0", "source": "registry", "offline": false,
+    "scanner_version": "2.6.0",
     "all_packages": true, "image_digest": "sha256:manifest", "image_platform": "linux/amd64",
     "duration_seconds": 1.25, "no_packages": false
   },

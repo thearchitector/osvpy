@@ -62,7 +62,7 @@ func TestConcurrentOnlineVulnerabilitiesAndLicenses(t *testing.T) {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			t.Parallel()
 			name, id := fmt.Sprintf("example-%d", i), fmt.Sprintf("OSVPY-ONLINE-%d", i)
-			image := fixtureImage(t, t.TempDir(), map[string][]byte{
+			image := fixtureImage(t, map[string][]byte{
 				"etc/os-release": []byte("ID=ubuntu\nVERSION_ID=24.04\n"),
 				"usr/lib/python3/site-packages/example-1.0.dist-info/METADATA": []byte("Metadata-Version: 2.1\nName: " + name + "\nVersion: 1.0\n"),
 			})
@@ -119,7 +119,7 @@ func TestConcurrentOnlineVulnerabilitiesAndLicenses(t *testing.T) {
 			if i%2 != 0 {
 				allowed = []string{"Apache-2.0"}
 			}
-			req := request{Image: image, Source: "docker_archive", AllowedLicenses: allowed, AllPackages: i%3 == 0}
+			req := request{Image: fixtureRegistry(t, image), AllowedLicenses: allowed, AllPackages: i%3 == 0}
 			for range 3 {
 				result := executeWithConfig(req, &scalibrconfig.PluginConfig{ClientFactories: clients})
 				if result.Error != nil || len(result.Result.Results) != 1 || len(result.Result.Results[0].Packages) != 1 {

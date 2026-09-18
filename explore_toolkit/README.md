@@ -17,10 +17,9 @@ force-add an experiment or its outputs. Regression tests belong in `tests/` or
 
 | Component | Purpose |
 | --- | --- |
-| `images.py` | `make_image()` builds Linux Docker-save archives from file contents. `make_fixture()` provides openssl, an unaffected package, and a local advisory database with configurable installed version and advisory size. `write_database()` writes any ecosystem's advisory ZIP. `registry_resources()` and `serve_registry()` provide a local two-platform OCI registry with optional credentials, status failures, and a request barrier. The behavioral suite uses these same fixtures. |
-| `reports.py` | `upstream_image()` generates coherent package/advisory workloads with configurable overlap, advisory fanout, alias sharing, descriptions, and license violations. `materialize_reports()` runs those inputs through the current native reporting boundary, as a batch or independent images. `load_report()` opens the resulting private wire fixture for view traversal. |
+| `images.py` | `registry_resources()` builds in-memory OCI layers and a two-platform image index from file contents. `serve_registry()` serves them locally with optional credentials, failures, and a request barrier. |
+| `reports.py` | `upstream_image()` generates coherent package/advisory workloads with configurable overlap, advisory fanout, alias sharing, descriptions, and license violations. The generator supplies upstream inputs to isolated native experiments. |
 | `data/complete_response.json` | Full-information upstream response template used by the report generator; preserves less common advisory and image fields. |
-| `report_driver_test.go` | Instrumentation adapter used only inside a temporary Go module by `materialize_reports()`. Records construction/encoding time, sampled Go heap, and C writer capacity. It is not a correctness test or fixed performance gate. |
 | `measure.py` | `timed()` collects untraced durations. `retained()` returns the live result and Python allocation measurements. `current_rss_bytes()` and `peak_rss_bytes()` distinguish current RSS from the process lifetime high-water mark. |
 | `processes.py` | `run_fresh()` repeats any JSON-producing command with a timeout and isolated process state. `medians()` summarizes selected numeric fields. Also runnable as a small command-line driver. |
 | `native.py` | `bridge_workspace()` copies the current flat Go module to a temporary workspace, optionally adding probe files. `build_library()` builds a separate shared library, optionally with race instrumentation. Neither installs a library nor replaces shared Python clients/loaders. |
@@ -35,32 +34,30 @@ are deliberately not retained.
 Create `explore_toolkit/experiments/scan_memory.py` with:
 
 ```python
+import asyncio
 import json
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-from pathlib import Path
 
 import osvpy
-from explore_toolkit.images import make_fixture
+from explore_toolkit.images import registry_resources, serve_registry
 from explore_toolkit.measure import peak_rss_bytes, retained, timed
 
-with tempfile.TemporaryDirectory() as directory:
-    archive, database = make_fixture(Path(directory), details_bytes=4 * 1024 * 1024)
-
-    def scan():
-        return osvpy.scan_docker_archive(archive, offline=True, database_path=database)
+with serve_registry(registry_resources()) as image:
 
     def group():
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            return list(pool.map(lambda _: scan(), range(8)))
+        async def run():
+            return await asyncio.gather(*(osvpy.scan(image) for _ in range(4)))
+
+        return asyncio.run(run())
 
     seconds = timed(group, repeats=3)
-    peak_rss = peak_rss_bytes()
     reports, memory = retained(group)
-    assert all(report.complete for report in reports)
     print(
-        json.dumps({"seconds": seconds, "peak_rss_bytes": peak_rss, **asdict(memory)})
+        json.dumps({
+            "seconds": seconds,
+            "peak_rss_bytes": peak_rss_bytes(),
+            **asdict(memory),
+        })
     )
 ```
 
@@ -79,46 +76,23 @@ git check-ignore explore_toolkit/experiments/scan_memory.py
 
 To compare concurrency levels, parameterize your script's worker count and run
 each level in a fresh process. There is no built-in workload matrix or performance
-threshold. Prepare all database files before scans start and keep them unchanged
-until every scan finishes. For acquisition tests, use `serve_registry()` as a
+threshold. For acquisition tests, use `serve_registry()` as a
 context manager. Passing the same `threading.Barrier(2)` to two registries allows
 an overlap check without speed assertions; manifest requests have a bounded wait.
 
 ## Study result construction and retention without scanning
 
-Use a fresh output directory for each case:
+`reports.upstream_image()` produces independently configurable upstream inputs.
+Use `overlap`, `fanout`, `details_bytes`, and `alias_only` to vary reporting
+workloads. Project these inputs inside an isolated native experiment; production
+results have no serialization or bulk-export API.
 
-```python
-from pathlib import Path
-
-from explore_toolkit.measure import retained, timed
-from explore_toolkit.reports import load_report, materialize_reports, upstream_image
-
-output = Path("explore_toolkit/experiments/partial_overlap")
-paths, native = materialize_reports(
-    (upstream_image(i, packages=2000, overlap=0.7) for i in range(10)), output
-)
-reports, memory = retained(lambda: [load_report(path) for path in paths])
-seconds = timed(lambda: sum(len(report.findings) for report in reports))
-print(native, memory, seconds)
-```
-
-Use `overlap=1` for shared packages, `overlap=0` for disjoint packages,
-`fanout=1` for individual advisories, `details_bytes` for large discarded bodies,
-and `alias_only=True` for image-specific advisory IDs sharing vulnerability
-aliases. `license_violations` varies assessments without changing package identity.
-Supply a failed image as `{"request": {"image": "missing"}, "error":
-{"code": "scan_error", "message": "synthetic failure"}}`. Set
-`independent=True` to emit one report per image instead of one combined batch.
-
-Inputs are generated one image at a time and saved before measurement. The Go
-adapter measures projection and encoding, excluding JSON loading, file writing,
-and compilation. This does **not** measure scanning or database lookup.
-`load_report()` includes disk reading and decoding; preload bytes and use the
-private decoder explicitly in a local experiment when measuring decode alone.
-Report fixtures use the current private wire format and must be regenerated after
-schema changes. The adapter is the only maintained instrumentation coupled to
-the native reporting implementation.
+The hard-cutover experiment is in ignored
+`experiments/cython_cutover/`. It preserves a runnable pre-cutover source tree
+and fixture definitions, compares the actual compiled Cython properties against
+that baseline, and records five fresh-process timings separately from allocation
+passes. Historical prototype measurements remain in `experiments/cython_probe/`;
+its binding is retired.
 
 ## Native experiments
 
@@ -152,8 +126,8 @@ race-instrumented shared library can fail during ThreadSanitizer initialization.
   slack. An escaped view can keep an entire result store alive.
 - Peak RSS includes imports, runtime initialization, inputs, and warm-up. Current
   RSS is available on Linux only (`None` elsewhere). Neither is a live-object count.
-- Go heap samples are checkpoints, not continuous peaks. C writer capacity is
-  a separate allocation measure. Do not add independently sampled peaks and call
+- Go heap samples are checkpoints, not continuous peaks. Native memory and Python tracing are
+  separate allocation measures. Do not add independently sampled peaks and call
   the sum an observed process peak.
 - Keep raw repeated samples in ignored files. Compare equivalent setup and
   workloads, and record environment/toolchain versions alongside your findings.

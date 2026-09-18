@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
 	"sync"
 	"time"
@@ -17,7 +16,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	scalibrimage "github.com/google/osv-scalibr/artifact/image/layerscanning/image"
 	scalibrlog "github.com/google/osv-scalibr/log"
 	scalibrconfig "github.com/google/osv-scalibr/plugin/config"
 	"github.com/google/osv-scanner/v2/pkg/models"
@@ -36,31 +35,29 @@ type registryAuth struct {
 }
 
 type request struct {
+	Inputs          []string      `json:"inputs"`
+	Workers         int           `json:"workers"`
+	Languages       []string      `json:"languages"`
 	Image           string        `json:"image"`
-	Source          string        `json:"source"`
-	Offline         bool          `json:"offline"`
 	AllPackages     bool          `json:"all_packages"`
 	Auth            *registryAuth `json:"auth,omitempty"`
 	Platform        string        `json:"platform,omitempty"`
-	DatabasePath    string        `json:"database_path,omitempty"`
 	AllowedLicenses []string      `json:"allowed_licenses"`
+}
+
+type scanMetadata struct {
+	Languages       []string `json:"languages,omitempty"`
+	ScannerVersion  string   `json:"scanner_version"`
+	AllPackages     bool     `json:"all_packages"`
+	ImageDigest     string   `json:"image_digest,omitempty"`
+	ImagePlatform   string   `json:"image_platform,omitempty"`
+	DurationSeconds float64  `json:"duration_seconds"`
+	NoPackages      bool     `json:"no_packages"`
 }
 
 type nativeError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-}
-
-type scanMetadata struct {
-	ScannerVersion  string  `json:"scanner_version"`
-	Source          string  `json:"source"`
-	Offline         bool    `json:"offline"`
-	AllPackages     bool    `json:"all_packages"`
-	ImageDigest     string  `json:"image_digest,omitempty"`
-	ImagePlatform   string  `json:"image_platform,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds"`
-	NoPackages      bool    `json:"no_packages"`
-	DatabasePath    string  `json:"database_path"`
 }
 
 type response struct {
@@ -73,141 +70,95 @@ func failure(code, message string) response {
 	return response{Error: &nativeError{Code: code, Message: message}}
 }
 
-func execute(req request) (out response) {
+func execute(req request) response {
 	return executeWithConfig(req, nil)
 }
 
 // Per-call dependencies allow hermetic network tests without replacing global
 // HTTP clients or loggers while other scans are running.
-func executeWithConfig(req request, config *scalibrconfig.PluginConfig) (out response) {
-	var ref name.Reference
+func executeWithConfig(req request, config *scalibrconfig.PluginConfig) response {
+	return executeContext(context.Background(), req, config)
+}
+
+func executeContext(ctx context.Context, req request, config *scalibrconfig.PluginConfig) (out response) {
+	if req.Languages == nil {
+		req.Languages = defaultLanguages()
+	}
+	checkContext(ctx)
+	ref, err := name.ParseReference(req.Image)
+	if err != nil {
+		return failure("invalid_image", err.Error())
+	}
 	var platform *v1.Platform
-	if req.Source == "registry" {
-		var err error
-		ref, err = name.ParseReference(req.Image)
+	if req.Platform != "" {
+		platform, err = v1.ParsePlatform(req.Platform)
 		if err != nil {
-			return failure("invalid_image", err.Error())
-		}
-		if req.Platform != "" {
-			platform, err = v1.ParsePlatform(req.Platform)
-			if err != nil {
-				return failure("invalid_request", err.Error())
-			}
+			return failure("invalid_request", err.Error())
 		}
 	}
-
 	loggerOnce.Do(func() {
 		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 		scalibrlog.SetLogger(discardLogger{})
 	})
 	started := time.Now()
-	path := req.Image
-	metadata := &scanMetadata{ScannerVersion: scannerVersion, Source: req.Source,
-		Offline: req.Offline, AllPackages: req.AllPackages, DatabasePath: req.DatabasePath}
+	metadata := scanMetadata{ScannerVersion: scannerVersion, AllPackages: req.AllPackages, Languages: req.Languages}
 	defer func() {
 		metadata.DurationSeconds = time.Since(started).Seconds()
-		out.Metadata = *metadata
+		out.Metadata = metadata
 	}()
-	if req.Source == "registry" {
-		// Explicit auth only. DefaultKeychain can execute Docker credential helpers.
-		auth := authn.Anonymous
-		if req.Auth != nil {
-			auth = &authn.Basic{Username: req.Auth.Username, Password: req.Auth.Password}
+	// Explicit auth only. DefaultKeychain can execute Docker credential helpers.
+	auth := authn.Anonymous
+	if req.Auth != nil {
+		auth = &authn.Basic{Username: req.Auth.Username, Password: req.Auth.Password}
+	}
+	opts := []remote.Option{remote.WithContext(ctx), remote.WithAuth(auth), remote.WithUserAgent("osvpy/0.1.0")}
+	if platform != nil {
+		opts = append(opts, remote.WithPlatform(*platform))
+	}
+	img, err := remote.Image(ref, opts...)
+	if err != nil {
+		return acquisitionError(err)
+	}
+	imageConfig, err := img.ConfigFile()
+	if err != nil {
+		return acquisitionError(err)
+	}
+	if imageConfig.OS != "linux" {
+		return failure("unsupported_image", "Only Linux container images are supported")
+	}
+	digest, err := img.Digest()
+	if err != nil {
+		return acquisitionError(err)
+	}
+	metadata.ImageDigest = digest.String()
+	metadata.ImagePlatform = imageConfig.OS + "/" + imageConfig.Architecture
+	prepared, err := scalibrimage.FromV1ImageContext(ctx, img, scalibrimage.DefaultConfig())
+	if err != nil {
+		return failure("scan_error", err.Error())
+	}
+	defer prepared.CleanUp()
+	disabled := []string{"baseimage"}
+	for _, plugin := range defaultLanguages() {
+		if !slices.Contains(req.Languages, plugin) {
+			disabled = append(disabled, plugin)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer cancel()
-		opts := []remote.Option{remote.WithContext(ctx), remote.WithAuth(auth), remote.WithUserAgent("osvpy/0.1.0")}
-		if platform != nil {
-			opts = append(opts, remote.WithPlatform(*platform))
-		}
-		img, err := remote.Image(ref, opts...)
-		if err != nil {
-			return acquisitionError(err)
-		}
-		config, err := img.ConfigFile()
-		if err != nil {
-			return acquisitionError(err)
-		}
-		if config.OS != "linux" {
-			return failure("unsupported_image", "Only Linux container images are supported")
-		}
-		digest, err := img.Digest()
-		if err != nil {
-			return acquisitionError(err)
-		}
-		metadata.ImageDigest = digest.String()
-		metadata.ImagePlatform = config.OS + "/" + config.Architecture
-		dir, err := os.MkdirTemp("", "osvpy-")
-		if err != nil {
-			return failure("scan_error", err.Error())
-		}
-		defer os.RemoveAll(dir)
-		path = dir + "/image.tar"
-		if err := tarball.WriteToFile(path, ref, img); err != nil {
-			return acquisitionError(err)
-		}
-	} else {
-		_, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return failure("image_not_found", "Image archive does not exist")
-		}
-		if err != nil {
-			return failure("scan_error", err.Error())
-		}
-		// Validate the single-image Docker-save contract and retain available
-		// identity before the scanner constructs its inventory graph.
-		img, err := tarball.ImageFromPath(path, nil)
-		if err != nil {
-			return failure("scan_error", err.Error())
-		}
-		config, err := img.ConfigFile()
-		if err != nil {
-			return failure("scan_error", err.Error())
-		}
-		if config.OS != "linux" {
-			return failure("unsupported_image", "Only Linux container images are supported")
-		}
-		digest, err := img.Digest()
-		if err != nil {
-			return failure("scan_error", err.Error())
-		}
-		metadata.ImageDigest = digest.String()
-		metadata.ImagePlatform = config.OS + "/" + config.Architecture
 	}
 	actions := osvscanner.ScannerActions{
-		Image: path, IsImageArchive: true, ShowAllPackages: req.Offline || req.AllPackages || req.AllowedLicenses != nil,
-		CompareOffline: req.Offline, PluginNetworkDisabled: req.Offline,
-		LocalDBPath: req.DatabasePath, DownloadDatabases: false,
+		PluginsEnabled: slices.Clone(req.Languages), PluginsDisabled: disabled,
+		Image: req.Image, ShowAllPackages: req.AllPackages || req.AllowedLicenses != nil,
 		ScanLicensesAllowlist: req.AllowedLicenses,
 		ScanLicensesSummary:   req.AllowedLicenses != nil,
 		RequestUserAgent:      "osvpy/0.1.0",
 		TransitiveScanning:    osvscanner.TransitiveScanningActions{Disabled: true},
 		ScalibrConfig:         config,
 	}
-	result, err := osvscanner.DoContainerScan(actions)
+	result, err := osvscanner.DoPreparedContainerScan(ctx, actions, prepared)
+	checkContext(ctx)
 	if err != nil && !errors.Is(err, osvscanner.ErrVulnerabilitiesFound) && !errors.Is(err, osvscanner.ErrNoPackagesFound) {
-		if req.Offline {
-			return failure("offline_unavailable", err.Error())
-		}
 		return failure("scan_error", err.Error())
 	}
-	metadata.DurationSeconds = time.Since(started).Seconds()
 	metadata.NoPackages = errors.Is(err, osvscanner.ErrNoPackagesFound)
-	if req.Offline {
-		if err := validateOfflineDatabases(req.DatabasePath, result); err != nil {
-			return failure("offline_unavailable", err.Error())
-		}
-		if !req.AllPackages {
-			for i := range result.Results {
-				result.Results[i].Packages = slices.DeleteFunc(result.Results[i].Packages, func(p models.PackageVulns) bool {
-					return len(p.Vulnerabilities) == 0 && len(p.LicenseViolations) == 0 && !p.Package.Deprecated
-				})
-			}
-		}
-	}
 	if req.AllowedLicenses != nil {
-		// Plugin failures can be nonfatal upstream. Never turn a skipped license
-		// lookup into a successful empty compliance report.
 		for i := range result.Results {
 			for j := range result.Results[i].Packages {
 				pkg := &result.Results[i].Packages[j]
@@ -222,7 +173,7 @@ func executeWithConfig(req request, config *scalibrconfig.PluginConfig) (out res
 			}
 		}
 	}
-	return response{Result: result, Metadata: *metadata}
+	return response{Result: result}
 }
 
 func acquisitionError(err error) response {
@@ -238,3 +189,7 @@ func acquisitionError(err error) response {
 }
 
 func main() {}
+
+func defaultLanguages() []string {
+	return []string{"python/wheelegg", "java/archive", "go/binary", "javascript/nodemodules", "rust/cargoauditable"}
+}

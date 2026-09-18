@@ -1,0 +1,48 @@
+--- a/vendor/github.com/google/osv-scalibr/artifact/image/layerscanning/image/image.go
++++ b/vendor/github.com/google/osv-scalibr/artifact/image/layerscanning/image/image.go
+@@ -297,6 +297,26 @@
+ // Note: The image returned should be cleaned up by calling CleanUp() by the caller once it is no
+ // longer needed.
+ func FromV1Image(v1Image v1.Image, config *Config) (*Image, error) {
++	return FromV1ImageContext(context.Background(), v1Image, config)
++}
++
++type cancellationReader struct {
++	ctx    context.Context
++	reader io.Reader
++}
++
++func (r cancellationReader) Read(p []byte) (int, error) {
++	if err := r.ctx.Err(); err != nil {
++		return 0, err
++	}
++	return r.reader.Read(p)
++}
++
++// FromV1ImageContext propagates cancellation through image preparation.
++func FromV1ImageContext(ctx context.Context, v1Image v1.Image, config *Config) (*Image, error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
+ 	if err := validateConfig(config); err != nil {
+ 		return nil, fmt.Errorf("invalid image config: %w", err)
+ 	}
+@@ -367,6 +387,9 @@
+ 	// Reverse loop through the layers to start from the latest layer first. This allows us to skip
+ 	// all files already seen.
+ 	for i := len(chainLayers) - 1; i >= 0; i-- {
++		if err := ctx.Err(); err != nil {
++			return nil, handleImageError(outputImage, err)
++		}
+ 		chainLayer := chainLayers[i]
+
+ 		// If the layer is empty, then there is nothing to do.
+@@ -391,7 +414,7 @@
+ 			// Manually close at the end of the for loop.
+ 			defer layerReader.Close()
+
+-			tarReader := tar.NewReader(layerReader)
++			tarReader := tar.NewReader(cancellationReader{ctx, layerReader})
+ 			if err := fillChainLayersWithFilesFromTar(outputImage, tarReader, chainLayersToFill); err != nil {
+ 				return fmt.Errorf("failed to fill chain layer with v1 layer tar: %w", err)
+ 			}

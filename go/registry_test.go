@@ -18,7 +18,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 func TestRegistryOverlapAndIsolation(t *testing.T) {
@@ -55,11 +54,7 @@ func TestRegistryOverlapAndIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		path := fixtureImage(t, t.TempDir(), map[string][]byte{"etc/os-release": []byte("ID=ubuntu\nVERSION_ID=24.04\n")})
-		img, err := tarball.ImageFromPath(path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
+		img := fixtureImage(t, map[string][]byte{"etc/os-release": []byte("ID=ubuntu\nVERSION_ID=24.04\n")})
 		index := v1.ImageIndex(empty.Index)
 		for _, platform := range []string{"amd64", "arm64"} {
 			config, err := img.ConfigFile()
@@ -76,7 +71,7 @@ func TestRegistryOverlapAndIsolation(t *testing.T) {
 		if err := remote.WriteIndex(ref, index, remote.WithAuth(&authn.Basic{Username: credential.Username, Password: credential.Password})); err != nil {
 			t.Fatal(err)
 		}
-		inputs[i] = request{Image: ref.Name(), Source: "registry", Auth: credential, Platform: "linux/" + arch}
+		inputs[i] = request{Image: ref.Name(), Auth: credential, Platform: "linux/" + arch}
 		active.Store(true)
 	}
 	results := make(chan response, 2)

@@ -12,3 +12,8 @@ wheelhouse/
 src/osvpy/_lib/
 
 /experiments/
+/go/vendor/
+
+*.md
+!ARCHITECTURE.md
+!README.md

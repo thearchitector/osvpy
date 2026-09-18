@@ -1,0 +1,118 @@
+--- a/vendor/github.com/google/osv-scanner/v2/pkg/osvscanner/osvscanner.go
++++ b/vendor/github.com/google/osv-scanner/v2/pkg/osvscanner/osvscanner.go
+@@ -37,6 +37,7 @@
+ )
+
+ type ScannerActions struct {
++	ScanContext context.Context
+ 	ExperimentalScannerActions
+
+ 	LockfilePaths      []string
+@@ -167,6 +168,16 @@
+ }
+
+ func DoContainerScan(actions ScannerActions) (models.VulnerabilityResults, error) {
++	return doContainerScan(context.Background(), actions, nil)
++}
++
++// DoPreparedContainerScan borrows the caller-owned image for the duration of the call.
++func DoPreparedContainerScan(ctx context.Context, actions ScannerActions, prepared *image.Image) (models.VulnerabilityResults, error) {
++	actions.ScanContext = ctx
++	return doContainerScan(ctx, actions, prepared)
++}
++
++func doContainerScan(ctx context.Context, actions ScannerActions, prepared *image.Image) (models.VulnerabilityResults, error) {
+ 	if actions.Image == "" {
+ 		return models.VulnerabilityResults{}, errors.New("container image must be provided")
+ 	}
+@@ -206,12 +217,11 @@
+
+ 	// --- Initialize Image To Scan ---'
+
+-	// TODO: Setup context at the start of the run
+-	ctx := context.TODO()
+-
+-	var img *image.Image
++	img := prepared
+ 	var err error
+-	if actions.IsImageArchive {
++	if img != nil {
++		// Caller owns preparation and cleanup.
++	} else if actions.IsImageArchive {
+ 		cmdlogger.Infof("Scanning local image tarball %q", actions.Image)
+ 		img, err = image.FromTarball(actions.Image, image.DefaultConfig())
+ 	} else if actions.Image != "" {
+@@ -231,6 +241,9 @@
+ 	}
+
+ 	defer func() {
++		if prepared != nil {
++			return
++		}
+ 		err := img.CleanUp()
+ 		if err != nil {
+ 			cmdlogger.Errorf("Failed to clean up image: %s", err)
+@@ -249,7 +262,7 @@
+
+ 	// --- Do Scalibr Scan ---
+ 	scanner := scalibr.New()
+-	scalibrSR, err := scanner.ScanContainer(context.Background(), img, &scalibr.ScanConfig{
++	scalibrSR, err := scanner.ScanContainer(ctx, img, &scalibr.ScanConfig{
+ 		Plugins:           plugins,
+ 		Capabilities:      capabilities,
+ 		StoreAbsolutePath: false,
+@@ -276,13 +289,13 @@
+ 	scanResults.Inventory = scalibrSR.Inventory
+
+ 	// --- Fill Image Metadata ---
+-	pssr, err := proto.ScanResultToProto(scalibrSR)
++	pssr, err := proto.InventoryToProto(&inventory.Inventory{ContainerImageMetadata: scalibrSR.Inventory.ContainerImageMetadata})
+ 	if err != nil {
+ 		return models.VulnerabilityResults{}, fmt.Errorf("failed to serialize scan results to proto: %w", err)
+ 	}
+
+-	if len(pssr.GetInventory().GetContainerImageMetadata()) > 0 {
+-		scanResults.ImageMetadata = pssr.GetInventory().GetContainerImageMetadata()[0]
++	if len(pssr.GetContainerImageMetadata()) > 0 {
++		scanResults.ImageMetadata = pssr.GetContainerImageMetadata()[0]
+ 	} else {
+ 		cmdlogger.Warnf("No container image metadata found in scan results")
+ 	}
+--- a/vendor/github.com/google/osv-scanner/v2/pkg/osvscanner/vulnerability_result.go
++++ b/vendor/github.com/google/osv-scanner/v2/pkg/osvscanner/vulnerability_result.go
+@@ -1,6 +1,8 @@
+ package osvscanner
+
+ import (
++	"github.com/google/osv-scalibr/extractor"
++	"github.com/google/osv-scalibr/inventory"
+ 	"path/filepath"
+ 	"slices"
+ 	"sort"
+@@ -43,7 +45,17 @@
+
+ 	groupedBySource := map[models.SourceInfo]*packageVulnsGroup{}
+
++	findings := make(map[*extractor.Package][]*inventory.PackageVuln, len(scanResults.Inventory.Packages))
++	for _, v := range scanResults.Inventory.PackageVulns {
++		if actions.ScanContext != nil && actions.ScanContext.Err() != nil {
++			panic(actions.ScanContext.Err())
++		}
++		findings[v.Package] = append(findings[v.Package], v)
++	}
+ 	for i, p := range scanResults.Inventory.Packages {
++		if actions.ScanContext != nil && actions.ScanContext.Err() != nil {
++			panic(actions.ScanContext.Err())
++		}
+ 		includePackage := actions.ShowAllPackages
+ 		var pkg models.PackageVulns
+
+@@ -73,7 +85,7 @@
+ 		configToUse := scanResults.ConfigManager.Get(imodels.Location(p))
+
+ 		haveCheckedIgnore := false
+-		for _, vuln := range scanResults.Inventory.PackageVulns {
++		for _, vuln := range findings[p] {
+ 			if vuln.Package == p {
+ 				if !haveCheckedIgnore {
+ 					if configToUse.ShouldIgnorePackageVulnerabilities(p) {

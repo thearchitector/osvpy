@@ -10,7 +10,7 @@ class OSVError(Exception):
 
 
 class ImageNotFoundError(OSVError):
-    """The registry image or archive does not exist."""
+    """The registry image does not exist."""
 
 
 class RegistryAuthenticationError(OSVError):
@@ -22,11 +22,7 @@ class ScanError(OSVError):
 
 
 class InvalidImageError(ScanError, ValueError):
-    """An image reference or source is invalid."""
-
-
-class OfflineDatabaseError(ScanError):
-    """Offline scanning cannot proceed with the provided image/databases."""
+    """An image reference is invalid."""
 
 
 class NativeLibraryError(OSVError):

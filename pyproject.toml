@@ -1,13 +1,11 @@
 [project]
 name = "osvpy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scan container images for vulnerabilities in Python. Built on OSV-Scanner."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "BSD-3-Clause-Clear"
-dependencies = [
-    "msgspec>=0.19,<1",
-]
+dependencies = []
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -61,7 +59,6 @@ preview = true
 strict = true
 quote-annotations = true
 exempt-modules = []
-runtime-evaluated-base-classes = ["msgspec.Struct"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "importlib.import_module".msg = "Do not dynamically import modules. Explicitly import them at the top of the file."
@@ -76,12 +73,13 @@ skip-magic-trailing-comma = true
 preview = true
 
 [tool.scikit-build]
+cmake.build-type = "Release"
+install.strip = true
 wheel.packages = ["src/osvpy"]
-wheel.py-api = "py3"
-wheel.exclude = ["**/*.h", "**/*.pyc", "**/__pycache__/**", "**/*.dSYM/**"]
+wheel.exclude = ["**/*.pyc", "**/__pycache__/**", "**/*.dSYM/**"]
 sdist.inclusion-mode = "explicit"
-sdist.include = ["pyproject.toml", "README.md", "go/**/*.go", "go/go.mod", "go/go.sum", "src/osvpy/*.py", "src/osvpy/py.typed", "CMakeLists.txt", "uv.lock"]
+sdist.include = ["pyproject.toml", "go/*.go", "go/patches/*.patch", "go/go.mod", "go/go.sum", "src/osvpy/*.py", "src/osvpy/*.pyx", "src/osvpy/*.pxd", "src/osvpy/*.pyi", "src/osvpy/py.typed", "CMakeLists.txt", "uv.lock"]
 
 [build-system]
-requires = ["scikit-build-core>=1.0.3,<1.1"]
+requires = ["scikit-build-core>=1.0.3,<1.1", "Cython==3.3.0"]
 build-backend = "scikit_build_core.build"

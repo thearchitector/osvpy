@@ -1,11 +1,11 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -24,11 +24,7 @@ func (t *table[T]) intern(dst *[]T, value T) int {
 		t.hashes = map[[32]byte][]int{}
 	}
 	for _, i := range t.hashes[h] {
-		old, err := json.Marshal((*dst)[i])
-		if err != nil {
-			panic(err)
-		}
-		if bytes.Equal(raw, old) {
+		if reflect.DeepEqual(value, (*dst)[i]) {
 			return i
 		}
 	}
@@ -40,34 +36,26 @@ func (t *table[T]) intern(dst *[]T, value T) int {
 }
 
 type batchBuilder struct {
-	report     reportStore
-	packages   map[reportPackage]int
-	advisory   table[reportAdvisory]
-	context    table[reportContext]
-	assessment table[reportAssessment]
-	license    table[reportLicense]
-	fix        table[reportFix]
-	parent     map[string]string
+	ctx             context.Context
+	report          reportStore
+	packages        map[reportPackage]int
+	advisory        table[reportAdvisory]
+	imageAdvisories map[*reportAdvisory]int
+	context         table[reportContext]
+	assessment      table[reportAssessment]
+	license         table[reportLicense]
+	fix             table[reportFix]
+	parent          map[string]string
 }
 
 func newBuilder() *batchBuilder {
-	return &batchBuilder{report: reportStore{ABIVersion: 4, SchemaVersion: 2}, packages: map[reportPackage]int{}, parent: map[string]string{}}
+	return &batchBuilder{report: reportStore{}, packages: map[reportPackage]int{}, parent: map[string]string{}}
 }
 func checked(v int) uint32 {
 	if v < 0 || uint64(v) > math.MaxUint32 {
 		panic("report_overflow")
 	}
 	return uint32(v)
-}
-func appendRow(b []byte, values ...int) []byte {
-	checked(len(b) + len(values)*4)
-	for _, v := range values {
-		b = binary.LittleEndian.AppendUint32(b, checked(v))
-	}
-	return b
-}
-func at(b []byte, row, width, col int) int {
-	return int(binary.LittleEndian.Uint32(b[(row*width+col)*4:]))
 }
 func (b *batchBuilder) root(id string) string {
 	p, ok := b.parent[id]
@@ -97,18 +85,15 @@ func (b *batchBuilder) union(ids []string) {
 		b.parent[c] = a
 	}
 }
-func (b *batchBuilder) add(req request, resp response) {
-	ii := len(b.report.Images)
-	checked(ii)
+func projectImage(cancelContext context.Context, req request, resp response, sink projectionSink) reportImage {
 	im := reportImage{Requested: req.Image, Metadata: resp.Metadata, Status: "complete"}
 	if resp.Error != nil {
 		im.Status = "failed"
 		if im.Metadata.ScannerVersion == "" {
-			im.Metadata = scanMetadata{ScannerVersion: scannerVersion, Source: req.Source, Offline: req.Offline, AllPackages: req.AllPackages, DatabasePath: req.DatabasePath}
+			im.Metadata = scanMetadata{ScannerVersion: scannerVersion, AllPackages: req.AllPackages, Languages: req.Languages}
 		}
 		im.Diagnostics = append(im.Diagnostics, *resp.Error)
-		b.report.Images = append(b.report.Images, im)
-		return
+		return im
 	}
 	result := resp.Result
 	diagnostic := func(code, message string) {
@@ -127,12 +112,13 @@ func (b *batchBuilder) add(req request, resp response) {
 		diagnostic("unsupported_findings", "Generic upstream findings are not represented")
 	}
 	// Pointer memoization is image-local and never keeps an upstream graph alive.
-	local := map[*osvschema.Vulnerability]int{}
+	local := map[*osvschema.Vulnerability]*reportAdvisory{}
 	for _, source := range result.Results {
 		if len(source.ExperimentalPES) > 0 {
 			diagnostic("unsupported_assessment", "Package exploitability signals are not represented")
 		}
 		for _, pkg := range source.Packages {
+			checkContext(cancelContext)
 			if pkg.Package.Deprecated {
 				diagnostic("unsupported_deprecation", "Package deprecation is outside vulnerability/license reporting")
 			}
@@ -149,13 +135,6 @@ func (b *batchBuilder) add(req request, resp response) {
 					diagnostic("unsupported_assessment", "Package exploitability signals are not represented")
 				}
 			}
-			pi, ok := b.packages[rp]
-			if !ok {
-				pi = len(b.report.Packages)
-				checked(pi)
-				b.report.Packages = append(b.report.Packages, rp)
-				b.packages[rp] = pi
-			}
 			ctx := reportContext{Path: source.Source.Path, SourceType: string(source.Source.Type), DependencyGroups: unique(slices.Clone(pkg.DepGroups))}
 			if p.Inventory != nil && p.Inventory.Location.PathOrEmpty() != "" {
 				ctx.Path = p.Inventory.Location.PathOrEmpty()
@@ -169,8 +148,7 @@ func (b *batchBuilder) add(req request, resp response) {
 					diagnostic("unknown_layer", "Package layer index is unavailable")
 				}
 			}
-			ci := b.context.intern(&b.report.Contexts, ctx)
-			lic := reportLicense{Status: "not_evaluated", Policy: unique(slices.Clone(req.AllowedLicenses))}
+			lic := reportLicense{Status: "not_evaluated", Policy: req.AllowedLicenses}
 			for _, l := range pkg.Licenses {
 				lic.Licenses = append(lic.Licenses, string(l))
 			}
@@ -188,51 +166,137 @@ func (b *batchBuilder) add(req request, resp response) {
 					lic.Status = "noncompliant"
 				}
 			}
-			li := b.license.intern(&b.report.Licenses, lic)
-			oi := len(b.report.Occurrences) / 16
-			b.report.Occurrences = appendRow(b.report.Occurrences, ii, pi, ci, li)
+			sink.occurrence(rp, ctx, lic)
 			for _, group := range pkg.Groups {
-				b.union(append(slices.Clone(group.IDs), group.Aliases...))
+				sink.union(append(slices.Clone(group.IDs), group.Aliases...))
 			}
+			groupsByID := make(map[string][]int, len(pkg.Vulnerabilities))
+			for i, g := range pkg.Groups {
+				for _, id := range g.IDs {
+					groupsByID[id] = append(groupsByID[id], i)
+				}
+			}
+			projectFix := packageFixes(p)
 			for _, a := range pkg.Vulnerabilities {
+				checkContext(cancelContext)
 				if a == nil || a.GetId() == "" {
 					diagnostic("unsupported_advisory", "Advisory has no source identifier")
 					continue
 				}
 				ai, ok := local[a]
 				if !ok {
-					ai = b.advisory.intern(&b.report.AdvisorySources, projectAdvisory(a))
+					value := projectAdvisory(a)
+					ai = &value
 					local[a] = ai
 				}
-				b.union(append([]string{a.GetId()}, a.GetAliases()...))
-				fi := b.fix.intern(&b.report.Fixes, advisoryFixes(p, a))
+				sink.union(append([]string{a.GetId()}, a.GetAliases()...))
+				fix := projectFix(a)
 				linked := false
-				for _, g := range pkg.Groups {
-					if !slices.Contains(g.IDs, a.GetId()) {
-						continue
-					}
+				for _, gi := range groupsByID[a.GetId()] {
+					g := pkg.Groups[gi]
 					linked = true
 					assess := reportAssessment{MaxSeverity: g.MaxSeverity}
 					if v, ok := g.ExperimentalAnalysis[a.GetId()]; ok {
 						assess.Called = &v.Called
 						assess.Unimportant = &v.Unimportant
 					}
-					si := b.assessment.intern(&b.report.Assessments, assess)
-					b.report.Findings = appendRow(b.report.Findings, oi, ai, fi, si, 0)
+					sink.finding(ai, fix, assess)
 				}
 				if !linked {
 					diagnostic("missing_assessment", "Advisory has no upstream group assessment")
-					si := b.assessment.intern(&b.report.Assessments, reportAssessment{})
-					b.report.Findings = appendRow(b.report.Findings, oi, ai, fi, si, 0)
+					sink.finding(ai, fix, reportAssessment{})
 				}
 			}
 		}
 	}
+	return im
+}
+
+type projectionSink interface {
+	occurrence(reportPackage, reportContext, reportLicense)
+	finding(*reportAdvisory, reportFix, reportAssessment)
+	union([]string)
+}
+
+// Reordering holds only projected reporting facts, never upstream inventories,
+// protobuf catalogs, or parsed database records. These are transient facts, not
+// independently finalized report stores.
+type pendingImage struct {
+	image       reportImage
+	occurrences []pendingOccurrence
+	aliases     [][]string
+}
+type pendingOccurrence struct {
+	pkg      reportPackage
+	context  reportContext
+	license  reportLicense
+	findings []pendingFinding
+}
+type pendingFinding struct {
+	advisory   *reportAdvisory
+	fix        reportFix
+	assessment reportAssessment
+}
+
+func (p *pendingImage) occurrence(pkg reportPackage, ctx reportContext, lic reportLicense) {
+	p.occurrences = append(p.occurrences, pendingOccurrence{pkg: pkg, context: ctx, license: lic})
+}
+func (p *pendingImage) finding(advisory *reportAdvisory, fix reportFix, assessment reportAssessment) {
+	o := &p.occurrences[len(p.occurrences)-1]
+	o.findings = append(o.findings, pendingFinding{advisory, fix, assessment})
+}
+func (p *pendingImage) union(ids []string) { p.aliases = append(p.aliases, ids) }
+
+func (b *batchBuilder) occurrence(pkg reportPackage, ctx reportContext, lic reportLicense) {
+	checkContext(b.ctx)
+	pi, ok := b.packages[pkg]
+	if !ok {
+		pi = len(b.report.Packages)
+		checked(pi)
+		b.report.Packages = append(b.report.Packages, pkg)
+		b.packages[pkg] = pi
+	}
+	ci := b.context.intern(&b.report.Contexts, ctx)
+	li := b.license.intern(&b.report.Licenses, lic)
+	checked(len(b.report.Occurrences) + 1)
+	b.report.Occurrences = append(b.report.Occurrences, occurrenceRow{checked(len(b.report.Images)), checked(pi), checked(ci), checked(li)})
+}
+func (b *batchBuilder) finding(advisory *reportAdvisory, fix reportFix, assessment reportAssessment) {
+	checkContext(b.ctx)
+	ai, ok := b.imageAdvisories[advisory]
+	if !ok {
+		ai = b.advisory.intern(&b.report.AdvisorySources, *advisory)
+		b.imageAdvisories[advisory] = ai
+	}
+	fi := b.fix.intern(&b.report.Fixes, fix)
+	si := b.assessment.intern(&b.report.Assessments, assessment)
+	checked(len(b.report.Findings) + 1)
+	b.report.Findings = append(b.report.Findings, findingRow{checked(len(b.report.Occurrences) - 1), checked(ai), checked(fi), checked(si), 0})
+}
+func (b *batchBuilder) add(req request, resp response) {
+	b.imageAdvisories = make(map[*reportAdvisory]int)
+	defer func() { b.imageAdvisories = nil }()
+	im := projectImage(b.ctx, req, resp, b)
 	b.report.Images = append(b.report.Images, im)
+}
+func (b *batchBuilder) merge(p pendingImage) {
+	b.imageAdvisories = make(map[*reportAdvisory]int)
+	defer func() { b.imageAdvisories = nil }()
+	for _, ids := range p.aliases {
+		b.union(ids)
+	}
+	for _, o := range p.occurrences {
+		b.occurrence(o.pkg, o.context, o.license)
+		for _, f := range o.findings {
+			b.finding(f.advisory, f.fix, f.assessment)
+		}
+	}
+	b.report.Images = append(b.report.Images, p.image)
 }
 func (b *batchBuilder) finish() reportStore {
 	groups := map[string][]string{}
 	for id := range b.parent {
+		checkContext(b.ctx)
 		root := b.root(id)
 		groups[root] = append(groups[root], id)
 	}
@@ -248,11 +312,13 @@ func (b *batchBuilder) finish() reportStore {
 		aliases = slices.DeleteFunc(aliases, func(s string) bool { return s == root })
 		b.report.Vulnerabilities = append(b.report.Vulnerabilities, reportVulnerability{root, aliases})
 	}
-	for i := 0; i < len(b.report.Findings)/20; i++ {
-		ai := at(b.report.Findings, i, 5, 1)
+	for i := 0; i < len(b.report.Findings); i++ {
+		checkContext(b.ctx)
+		ai := b.report.Findings[i].Advisory
 		vi := ids[b.root(b.report.AdvisorySources[ai].ID)]
-		binary.LittleEndian.PutUint32(b.report.Findings[i*20+16:], checked(vi))
+		b.report.Findings[i].Vulnerability = checked(vi)
 	}
+	b.report.buildIndexes(b.ctx)
 	r := b.report
 	*b = batchBuilder{}
 	return r

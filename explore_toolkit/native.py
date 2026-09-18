@@ -40,6 +40,12 @@ def bridge_workspace(
             if target.exists():
                 raise FileExistsError(target)
             shutil.copy2(path, target)
+        subprocess.run(["go", "mod", "vendor"], cwd=workspace, check=True)
+        subprocess.run(
+            ["git", "apply", *map(str, sorted((source / "patches").glob("*.patch")))],
+            cwd=workspace,
+            check=True,
+        )
         yield workspace
 
 
@@ -59,7 +65,7 @@ def build_library(
         [
             "go",
             "build",
-            "-mod=readonly",
+            "-mod=vendor",
             "-buildvcs=false",
             "-buildmode=c-shared",
             *(["-race"] if race else []),

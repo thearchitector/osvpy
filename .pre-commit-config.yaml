@@ -8,6 +8,11 @@ repos:
                 - --exit-non-zero-on-fix
           - id: ruff-format
             types_or: [python, markdown]
+    - repo: https://github.com/MarcoGorelli/cython-lint
+      rev: v0.21.1
+      hooks:
+          - id: cython-lint
+          - id: double-quote-cython-strings
     - repo: local
       hooks:
           - id: typecheck
@@ -21,7 +26,7 @@ repos:
           - id: go-fix
             name: go-fix
             language: system
-            entry: go -C go fix ./...
+            entry: bash -c 'cd go && go mod vendor && git apply patches/*.patch && go fix -mod=vendor ./...'
             types: [go]
             pass_filenames: false
             require_serial: true

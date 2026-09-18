@@ -8,7 +8,4 @@
 !/processes.py
 !/native.py
 !/reports.py
-!/report_driver_test.go
 !/data/
-/data/*
-!/data/complete_response.json

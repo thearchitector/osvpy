@@ -4,11 +4,11 @@ from .exceptions import (
     ImageNotFoundError,
     InvalidImageError,
     NativeLibraryError,
-    OfflineDatabaseError,
     OSVError,
     RegistryAuthenticationError,
     ScanError,
 )
+from .languages import LanguageSelection
 from .models import (
     AdvisorySource,
     BatchResult,
@@ -19,7 +19,7 @@ from .models import (
     RegistryAuth,
     Vulnerability,
 )
-from .scanner import scan_docker_archive, scan_image
+from .scanner import scan
 
 __version__ = "0.1.0"
 __all__ = [
@@ -29,15 +29,14 @@ __all__ = [
     "ImageNotFoundError",
     "ImageResult",
     "InvalidImageError",
+    "LanguageSelection",
     "NativeLibraryError",
     "OSVError",
     "Occurrence",
-    "OfflineDatabaseError",
     "Package",
     "RegistryAuth",
     "RegistryAuthenticationError",
     "ScanError",
     "Vulnerability",
-    "scan_docker_archive",
-    "scan_image",
+    "scan",
 ]

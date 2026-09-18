@@ -8,7 +8,7 @@ Scan container images for vulnerabilities and license incompatibilities.
 
 Built with [osvscanner](https://github.com/google/osv-scanner). In-process, no external dependencies.
 
-Requires Python 3.13+ on Linux, WSL, or macOS 13+, on x86_64 or arm64.
+Supports Python 3.13+ on Linux, WSL, or macOS 13+.
 
 ## Installation
 
@@ -21,91 +21,135 @@ uv add osvpy
 ## Scan images
 
 ```python
+import asyncio
+
 import osvpy
 
-batch = osvpy.scan_image("ubuntu:latest", "python:3.12-slim")
+batch = await osvpy.scan("ubuntu:latest", "python:3.12-slim", workers=2)
+
 
 for image in batch.images:
     if not image.complete:
-        print(image.data.requested, image.data.diagnostics)
+        for diagnostic in image.diagnostics:
+            print(image.requested, diagnostic.code, diagnostic.message)
         continue
 
     for finding in image.findings:
-        package = finding.occurrence.package.data
+        package = finding.occurrence.package
         print(
+            image.requested,
             package.name,
             package.version,
-            finding.vulnerability.data.id,
-            finding.fix_evidence.versions,
+            finding.vulnerability.id,
+            tuple(finding.fix_evidence.versions),
             finding.fix_evidence.status,
         )
 ```
 
-Both scan functions return a `BatchResult`. Images appear in input order;
-repeated inputs have separate results. One input produces one image result;
-zero inputs produce an empty batch. Keyword options apply to every input.
+`scan()` returns a `BatchResult` with one image result per input, in input order.
+Repeated inputs have separate image results. Calling `scan()` without images
+returns an empty batch. The examples below use `await` inside an async function
+or notebook.
 
-By default, reports include packages relevant to vulnerability or license
-findings. Use `all_packages=True` to include packages without findings.
+### Scan options
+
+Keyword options apply to every image in the call.
+
+| Option             | Default                | Purpose                                                          |
+| ------------------ | ---------------------- | ---------------------------------------------------------------- |
+| `workers`          | `1`                    | Maximum number of images scanned concurrently; must be positive. |
+| `all_packages`     | `False`                | Include packages without vulnerability or license findings.      |
+| `languages`        | `None`                 | Select language families or individual package formats.          |
+| `allowed_licenses` | `None`                 | Evaluate packages against an SPDX license allowlist.             |
+| `auth`             | `None`                 | Supply registry credentials with `RegistryAuth`.                 |
+| `platform`         | `None` (`linux/amd64`) | Select the image platform, such as `"linux/arm64"`.              |
 
 ### Private registries and platforms
 
 ```python
-batch = osvpy.scan_image(
+batch = await osvpy.scan(
     "registry.example.com/team/app:latest",
     auth=osvpy.RegistryAuth("reader", "password"),
     platform="linux/arm64",
     all_packages=True,
 )
-print(batch.images[0].data.metadata.image_digest)
+print(batch.images[0].metadata.image_digest)
 ```
 
-Registry references accept tags or digests. The default platform is
-`linux/amd64`. Supply credentials through `RegistryAuth`; Docker credential
-helpers are not used.
+Registry references accept tags or digests. Supply credentials through
+`RegistryAuth`; Docker credential helpers are not used.
 
-### Docker-save archives
+## Concurrency and cancellation
+
+Use `workers` to limit concurrency within a batch. Separate calls can run
+concurrently, and completed results can be read from multiple threads.
+Concurrency limits apply to each call separately.
+
+Set a deadline with `asyncio.timeout()` or `asyncio.wait_for()`:
 
 ```python
-from pathlib import Path
+import asyncio
 
-batch = osvpy.scan_docker_archive(Path("one.tar"), Path("two.tar"), all_packages=True)
+async with asyncio.timeout(30):
+    batch = await osvpy.scan("debian:12-slim")
 ```
 
-Paths accept strings or `os.PathLike` objects. Each archive must contain one
-Docker-save image. A Docker daemon is not required. OCI-layout archives and
-multi-image archives are not supported.
+Cancel an active scan with `task.cancel()`. Cancellation raises
+`asyncio.CancelledError` after the scan stops; it does not return a partial batch.
+Timeouts raise `TimeoutError` and may take longer than the requested deadline
+while the scan stops. Repeated cancellation and `asyncio.TaskGroup` are supported.
 
-### Offline scanning
+## Language coverage
+
+Combine families with `|`, or select individual formats such as `PYTHON_UV`:
 
 ```python
-batch = osvpy.scan_docker_archive("one.tar", offline=True, database_path="/srv/osv-db")
+batch = await osvpy.scan(
+    "python:3.12-slim",
+    languages=osvpy.LanguageSelection.PYTHON | osvpy.LanguageSelection.JAVA,
+)
 ```
 
-The database directory must contain the relevant OSV database ZIPs, such as
-`/srv/osv-db/osv-scalibr/Ubuntu/all.zip`. Offline scans do not download databases
-or use the network. Registry scans and license checks require online mode.
+Family selections include supported manifests and lockfiles. Individual format
+names combine the family and suffix, such as `JAVA_MAVEN`.
 
-A missing, unreadable, or invalid required ZIP produces an `offline_unavailable`
-failed image slot, discards that image's partial findings, and allows later images
-to continue. This also applies when `all_packages=False`. Empty images require no
-ecosystem ZIP. Validation checks archive structure and checksums, not every
-advisory record. Keep database files unchanged throughout active scans.
+| Family     | Format suffixes                                                 |
+| ---------- | --------------------------------------------------------------- |
+| CPP        | CONAN                                                           |
+| DART       | PUBSPEC                                                         |
+| DOTNET     | PROJECT, DEPS, CENTRAL_PACKAGES, PACKAGES_CONFIG, PACKAGES_LOCK |
+| ELIXIR     | MIX                                                             |
+| GO         | BINARY, MODULES                                                 |
+| HASKELL    | CABAL, STACK                                                    |
+| JAVA       | ARCHIVE, GRADLE_LOCK, GRADLE_VERIFICATION, MAVEN                |
+| JAVASCRIPT | INSTALLED, NPM, PNPM, YARN, BUN                                 |
+| PHP        | COMPOSER                                                        |
+| PYTHON     | INSTALLED, REQUIREMENTS, POETRY, PIPFILE, PDM, PYLOCK, UV       |
+| R          | RENV                                                            |
+| RUBY       | GEMFILE                                                         |
+| RUST       | BINARY, CARGO                                                   |
+| SWIFT      | PACKAGE_RESOLVED                                                |
+
+- `None` or `LanguageSelection.INSTALLED`: installed Python and JavaScript packages, Java archives, and Go and Rust binaries.
+- `LanguageSelection.ALL`: every format listed above.
+- `LanguageSelection.NONE`: OS packages only.
+
+OS package scanning remains enabled with every language selection. Standalone
+source directories, lockfiles, and SBOM files are not accepted as scan inputs.
 
 ## Read results
 
-Results are read-only. Package, vulnerability, advisory, and image fields are
-available through `.data`.
+Access fields directly, such as `package.name` or `image.metadata.image_digest`.
 
-| Object            | Available data and relationships                                                                                                                                                                      |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `batch`           | `images`, `packages`, `vulnerabilities`, `advisory_sources`, `findings`, `complete`, `errors`                                                                                                         |
-| `image`           | `data.requested`, `data.os`, `data.metadata`, `data.status`, `data.diagnostics`, `complete`, `packages`, `occurrences`, `vulnerable_packages`, `noncompliant_packages`, `vulnerabilities`, `findings` |
-| `package`         | `data.name`, `data.version`, `data.ecosystem`, `data.commit`, `data.os_package_name`, `data.purl`, `present_images`, `vulnerable_images`, `noncompliant_images`, `affected_images`, `findings`        |
-| `vulnerability`   | `data.id`, `data.aliases`, `affected_images`, `findings`                                                                                                                                              |
-| `advisory_source` | `data.id`, `data.summary`, `data.severities`, `data.references`, `data.modified`, `data.published`, `data.withdrawn`, `affected_images`, `findings`                                                   |
-| `occurrence`      | `image`, `package`, `context`, `license_assessment`, `findings`                                                                                                                                       |
-| `finding`         | `occurrence`, `vulnerability`, `advisory_source`, `assessment`, `fix_evidence`                                                                                                                        |
+| Object            | Data and relationships                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch`           | `images`, `packages`, `vulnerabilities`, `advisory_sources`, `findings`, `complete`, `errors`                                                                                |
+| `image`           | `requested`, `os`, `metadata`, `status`, `diagnostics`, `complete`, `packages`, `occurrences`, `vulnerable_packages`, `noncompliant_packages`, `vulnerabilities`, `findings` |
+| `package`         | `name`, `version`, `ecosystem`, `commit`, `os_package_name`, `purl`, `present_images`, `vulnerable_images`, `noncompliant_images`, `affected_images`, `findings`             |
+| `vulnerability`   | `id`, `aliases`, `affected_images`, `findings`                                                                                                                               |
+| `advisory_source` | `id`, `aliases`, `summary`, `severities`, `references`, `modified`, `published`, `withdrawn`, `affected_images`, `findings`                                                  |
+| `occurrence`      | `image`, `package`, `context`, `license_assessment`, `findings`                                                                                                              |
+| `finding`         | `occurrence`, `vulnerability`, `advisory_source`, `assessment`, `fix_evidence`                                                                                               |
 
 An occurrence describes a package in a particular image and location. Its
 `context` includes the path, source type, layer digest, and dependency groups.
@@ -113,7 +157,8 @@ Package `affected_images` combines vulnerability-affected and license-noncomplia
 images; `present_images` includes every image reporting that package.
 
 Vulnerabilities group related advisory identifiers, preferring a CVE identifier
-when available. Source advisories retain their individual reporting facts.
+when available. Individual advisories provide their own summaries, severity
+information, references, and dates.
 
 ### Fix evidence
 
@@ -127,61 +172,65 @@ version are excluded.
 | `no_reported_fix`             | No applicable explicit fix version was reported.               |
 | `unknown`                     | Fix applicability or version ordering could not be determined. |
 
-Unknown ordering preserves reported version strings. An empty collection of fixes
-does not establish that no fix exists. Fix evidence is not an upgrade
-recommendation or a guarantee that later versions are unaffected.
+Unknown ordering preserves reported version strings. An empty collection does
+not establish that no fix exists. Reported fixes are not upgrade recommendations
+or a guarantee that later versions are unaffected.
 
-## Memory usage
+### Collections and equality
 
-Result memory depends on the number of packages, findings, and distinct advisory
-facts. Scanning related images in one batch can use less result memory than
-keeping separate scan results, particularly when the images share packages and
-vulnerabilities.
+Collections support iteration, `len()`, negative indexing, and slicing. Slices
+return tuples. Use `tuple(values)` to collect all items into a tuple.
 
-In a synthetic benchmark with 2,000 package occurrences per image:
-
-| Workload                                                  | Memory retained by results |
-| --------------------------------------------------------- | -------------------------: |
-| One image                                                 |                   ~1.7 MiB |
-| Ten images with fully overlapping packages and advisories |                   ~3.3 MiB |
-| Ten images with partial overlap                           |                  ~10.7 MiB |
-| Ten images with no overlap                                |                  ~17.3 MiB |
-
-These figures measure retained results, not total process memory or peak memory
-during a scan. Image scanning and vulnerability databases require additional
-memory.
+Results are read-only and cannot be pickled. References to the same record within
+a batch compare equal and have the same hash. Records from separate scans compare
+unequal; compare their fields when checking for matching contents. A package,
+finding, or collection remains usable after its original batch variable is deleted.
 
 ## License policies
 
 ```python
-batch = osvpy.scan_image("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
+batch = await osvpy.scan("python:3.12-slim", allowed_licenses={"MIT", "Apache-2.0"})
 
 for occurrence in batch.images[0].occurrences:
     assessment = occurrence.license_assessment
-    print(occurrence.package.data.name, assessment.status, assessment.violations)
+    print(occurrence.package.name, assessment.status, tuple(assessment.violations))
 ```
 
 `allowed_licenses=None` disables license evaluation. An empty collection allows
-no licenses. Policies support SPDX expressions.
+no licenses. Policies support SPDX expressions. `assessment.policy` is `None`
+when evaluation was not requested, or an empty sequence for an empty allowlist.
 
 License assessment statuses are `not_evaluated`, `compliant`, `noncompliant`,
 and `unknown`. Packages can have license violations without vulnerabilities.
 
 ## Failures and diagnostics
 
-An acquisition or scan failure produces a failed image result; remaining inputs
-are still scanned. `batch.complete` is false if any image failed.
+An image download or scan failure produces a failed image result; remaining
+inputs are still scanned. `batch.complete` is false if any image failed.
 
 ```python
 for image_index, diagnostic in batch.errors:
-    print(batch.images[image_index].data.requested)
+    print(batch.images[image_index].requested)
     print(diagnostic.code, diagnostic.message)
 ```
 
 Error codes include `registry_authentication`, `image_not_found`, `invalid_image`,
-`offline_unavailable`, and `scan_error`. Failed images represent unknown results.
-Successful images may also contain diagnostics in `image.data.diagnostics`.
+and `scan_error`. Failed images represent unknown results.
+Successful images may also contain diagnostics in `image.diagnostics`.
 
-Unsupported offline option combinations raise `OfflineDatabaseError`. Native
-operation failures raise `NativeLibraryError` and abort the batch. Library
-exceptions derive from `osvpy.OSVError`.
+Batch-level failures raise `osvpy.NativeLibraryError` and abort the batch.
+Library exceptions derive from `osvpy.OSVError`.
+
+## Comparison
+
+- **osvpy** reduces the code needed to integrate scanning into a Python application. The tradeoff is that scanning shares the application's process, memory budget, and failure boundary.
+- **Calling the OSV-Scanner CLI** gives each scan a separate process that you can monitor, limit, or terminate independently. The tradeoff is managing that process and translating its output into application data.
+
+| Tradeoff                | osvpy                                                                                                                              | Calling the CLI from Python                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Integration effort      | Typed results and async cancellation reduce orchestration and parsing code.                                                        | You manage arguments, stdout/stderr, [exit codes, and JSON parsing](https://google.github.io/osv-scanner/output/).   |
+| Per-call overhead       | Avoids starting a scanner process and serializing a full report to JSON for each call. Reading result properties still has a cost. | Adds process startup and output parsing; that overhead may be small compared with the scan itself.                   |
+| Failure isolation       | A native crash can bring down the Python application.                                                                              | A scanner crash is contained in the child process; the application can inspect its exit status and retry.            |
+| Resource control        | Worker limits are convenient, but scans share the application's memory budget. Cancellation waits for scanning to stop.            | Separate processes allow OS-level resource limits and forced termination, with process cleanup handled by your code. |
+| Memory lifetime         | Related images can share report data, but retaining one result object keeps its batch in memory.                                   | Scanner memory is released when the process exits; captured output and parsed results still occupy Python memory.    |
+| Deployment and upgrades | One Python package to install on supported platforms; scanner upgrades come through library releases.                              | Another executable to distribute and version, but it can be upgraded independently of the Python application.        |

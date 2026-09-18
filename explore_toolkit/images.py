@@ -1,4 +1,4 @@
-"""Docker-save images, offline OSV databases, and local multi-platform registries."""
+"""Local multi-platform registry fixtures."""
 
 import base64
 import gzip
@@ -6,17 +6,14 @@ import hashlib
 import io
 import json
 import tarfile
-import zipfile
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
-    from pathlib import Path
+    from collections.abc import Iterator
     from threading import Barrier
-    from typing import Any
 
     from osvpy import RegistryAuth
 
@@ -32,94 +29,14 @@ def _tar(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def make_image(
-    directory: "Path", files: dict[str, bytes], *, architecture: str = "amd64"
-) -> "Path":
-    """Write a single-image Linux Docker-save archive from filesystem contents."""
-    directory.mkdir(parents=True, exist_ok=True)
-    layer = _tar(files)
-    config = json.dumps({
-        "architecture": architecture,
-        "os": "linux",
-        "rootfs": {
-            "type": "layers",
-            "diff_ids": ["sha256:" + hashlib.sha256(layer).hexdigest()],
-        },
-        "history": [{"created_by": "synthetic osvpy fixture"}],
-        "config": {},
-    }).encode()
-    manifest = json.dumps([
-        {
-            "Config": "config.json",
-            "RepoTags": ["osvpy-fixture:latest"],
-            "Layers": ["layer.tar"],
-        }
-    ]).encode()
-    archive = directory / "fixture.tar"
-    archive.write_bytes(
-        _tar({"manifest.json": manifest, "config.json": config, "layer.tar": layer})
-    )
-    return archive
-
-
-def write_database(
-    database: "Path", ecosystem: str, advisories: "Iterable[dict[str, Any]]"
-) -> "Path":
-    """Replace one ecosystem ZIP; do this before starting scans that use it."""
-    path = database / "osv-scalibr" / ecosystem / "all.zip"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(path, "w") as output:
-        for advisory in advisories:
-            output.writestr(f"{advisory['id']}.json", json.dumps(advisory))
-    return path
-
-
-def make_fixture(
-    directory: "Path", *, version: str = "3.0.0-1", details_bytes: int = 0
-) -> tuple["Path", "Path"]:
-    """Create Ubuntu openssl plus an unaffected package and one local advisory."""
-    if details_bytes < 0:
-        raise ValueError("details_bytes must be nonnegative")
-    archive = make_image(
-        directory,
-        {
-            "etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\nPRETTY_NAME="Ubuntu 24.04 LTS"\n',
-            "var/lib/dpkg/status": (
-                "Package: openssl\nStatus: install ok installed\nArchitecture: amd64\n"
-                f"Version: {version}\nDescription: synthetic osvpy test package\n\n"
-                "Package: unaffected\nStatus: install ok installed\nArchitecture: amd64\n"
-                "Version: 1.0\nDescription: package without findings\n\n"
-            ).encode(),
-        },
-    )
-    database = directory / "db"
-    vulnerability = {
-        "schema_version": "1.7.0",
-        "id": "OSVPY-TEST-0001",
-        "modified": "2026-01-01T00:00:00Z",
-        "published": "2026-01-01T00:00:00Z",
-        "summary": "Synthetic test vulnerability; not a real advisory",
-        "details": "x" * details_bytes,
-        "affected": [
-            {
-                "package": {"name": "openssl", "ecosystem": "Ubuntu:24.04"},
-                "ranges": [
-                    {
-                        "type": "ECOSYSTEM",
-                        "events": [{"introduced": "0"}, {"fixed": "3.0.0-2"}],
-                    }
-                ],
-            }
-        ],
-    }
-    write_database(database, "Ubuntu", [vulnerability])
-    return archive, database
-
-
-def registry_resources() -> dict[str, bytes]:
+def registry_resources(files: dict[str, bytes] | None = None) -> dict[str, bytes]:
     """Serve an OCI image index containing two architectures, without Docker."""
-    # No package inventory: acquisition tests need no external vulnerability service.
-    content = _tar({"etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\n'})
+    # The default inventory is empty, so acquisition tests need no OSV service.
+    content = _tar(
+        {"etc/os-release": b'ID=ubuntu\nVERSION_ID="24.04"\n'}
+        if files is None
+        else files
+    )
     config = {
         "os": "linux",
         "rootfs": {

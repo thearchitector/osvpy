@@ -77,9 +77,11 @@ type reportImage struct {
 	Status      string        `json:"status"`
 	Diagnostics []nativeError `json:"diagnostics,omitempty"`
 }
+type occurrenceRow struct{ Image, Package, Context, License uint32 }
+type findingRow struct{ Occurrence, Advisory, Fix, Assessment, Vulnerability uint32 }
+
 type reportStore struct {
-	ABIVersion      int                   `json:"abi_version"`
-	SchemaVersion   int                   `json:"schema_version"`
+	Indexes         []reportIndex         `json:"indexes"`
 	Images          []reportImage         `json:"images,omitempty"`
 	Packages        []reportPackage       `json:"packages,omitempty"`
 	Vulnerabilities []reportVulnerability `json:"vulnerabilities,omitempty"`
@@ -90,8 +92,8 @@ type reportStore struct {
 	Fixes           []reportFix           `json:"fixes,omitempty"`
 	// Occurrences: image, package, context, license. Findings: occurrence,
 	// advisory source, fix evidence, assessment, vulnerability group.
-	Occurrences []byte `json:"occurrences,omitempty"`
-	Findings    []byte `json:"findings,omitempty"`
+	Occurrences []occurrenceRow `json:"occurrences,omitempty"`
+	Findings    []findingRow    `json:"findings,omitempty"`
 }
 
 func unique(values []string) []string {
@@ -182,53 +184,60 @@ func versionKnown(version, eco string) bool {
 	return err == nil
 }
 func advisoryFixes(pkg models.PackageInfo, a *osvschema.Vulnerability) reportFix {
-	r := reportFix{Status: "no_reported_fix"}
+	return packageFixes(pkg)(a)
+}
+
+func packageFixes(pkg models.PackageInfo) func(*osvschema.Vulnerability) reportFix {
 	installed, parseErr := semantic.Parse(pkg.Version, ecosystem(pkg.Ecosystem))
-	matched, unknown := false, false
-	for _, affected := range a.GetAffected() {
-		p := affected.GetPackage()
-		if ecosystem(p.GetEcosystem()) != ecosystem(pkg.Ecosystem) || (p.GetName() != pkg.Name && (pkg.OSPackageName == "" || p.GetName() != pkg.OSPackageName)) {
-			continue
-		}
-		matched = true
-		for _, severity := range affected.GetSeverity() {
-			r.Severities = append(r.Severities, reportSeverity{severity.GetType().String(), severity.GetSource().String(), severity.GetScore()})
-		}
-		if urgency := extensionString(affected.GetEcosystemSpecific(), "urgency"); urgency != nil {
-			r.Urgencies = append(r.Urgencies, *urgency)
-		}
-		for _, rg := range affected.GetRanges() {
-			if rg.GetType() != osvschema.Range_ECOSYSTEM && rg.GetType() != osvschema.Range_SEMVER {
-				unknown = true
-			}
-			if rg.GetType() == osvschema.Range_GIT {
-				unknown = true
+	known := parseErr == nil && versionKnown(pkg.Version, pkg.Ecosystem)
+	return func(a *osvschema.Vulnerability) reportFix {
+		r := reportFix{Status: "no_reported_fix"}
+		matched, unknown := false, false
+		for _, affected := range a.GetAffected() {
+			p := affected.GetPackage()
+			if ecosystem(p.GetEcosystem()) != ecosystem(pkg.Ecosystem) || (p.GetName() != pkg.Name && (pkg.OSPackageName == "" || p.GetName() != pkg.OSPackageName)) {
 				continue
 			}
-			for _, event := range rg.GetEvents() {
-				fix := event.GetFixed()
-				if fix == "" {
+			matched = true
+			for _, severity := range affected.GetSeverity() {
+				r.Severities = append(r.Severities, reportSeverity{severity.GetType().String(), severity.GetSource().String(), severity.GetScore()})
+			}
+			if urgency := extensionString(affected.GetEcosystemSpecific(), "urgency"); urgency != nil {
+				r.Urgencies = append(r.Urgencies, *urgency)
+			}
+			for _, rg := range affected.GetRanges() {
+				if rg.GetType() != osvschema.Range_ECOSYSTEM && rg.GetType() != osvschema.Range_SEMVER {
+					unknown = true
+				}
+				if rg.GetType() == osvschema.Range_GIT {
+					unknown = true
 					continue
 				}
-				if parseErr != nil || !versionKnown(pkg.Version, pkg.Ecosystem) || !versionKnown(fix, pkg.Ecosystem) {
-					unknown = true
-				} else if order, err := installed.CompareStr(fix); err != nil {
-					unknown = true
-				} else if order >= 0 {
-					continue
+				for _, event := range rg.GetEvents() {
+					fix := event.GetFixed()
+					if fix == "" {
+						continue
+					}
+					if !known || !versionKnown(fix, pkg.Ecosystem) {
+						unknown = true
+					} else if order, err := installed.CompareStr(fix); err != nil {
+						unknown = true
+					} else if order >= 0 {
+						continue
+					}
+					r.Versions = append(r.Versions, fix)
 				}
-				r.Versions = append(r.Versions, fix)
 			}
 		}
+		r.Versions = unique(r.Versions)
+		r.Urgencies = unique(r.Urgencies)
+		r.Severities = canonicalSeverities(r.Severities)
+		if len(r.Versions) > 0 {
+			r.Status = "reported"
+		}
+		if !matched || unknown {
+			r.Status = "unknown"
+		}
+		return r
 	}
-	r.Versions = unique(r.Versions)
-	r.Urgencies = unique(r.Urgencies)
-	r.Severities = canonicalSeverities(r.Severities)
-	if len(r.Versions) > 0 {
-		r.Status = "reported"
-	}
-	if !matched || unknown {
-		r.Status = "unknown"
-	}
-	return r
 }

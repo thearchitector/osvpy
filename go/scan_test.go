@@ -2,16 +2,23 @@ package main
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"bytes"
-	"crypto/sha256"
-	"fmt"
-	"os"
-	"path/filepath"
+	"io"
+	"log"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/registry"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
-func fixtureTar(t *testing.T, files map[string][]byte) []byte {
+func fixtureImage(t *testing.T, files map[string][]byte) v1.Image {
 	t.Helper()
 	var buf bytes.Buffer
 	w := tar.NewWriter(&buf)
@@ -26,72 +33,37 @@ func fixtureTar(t *testing.T, files map[string][]byte) []byte {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
-}
-
-func offlineRequest(t *testing.T, version string) request {
-	t.Helper()
-	dir := t.TempDir()
-	path := fixtureImage(t, dir, map[string][]byte{
-		"etc/os-release":      []byte("ID=ubuntu\nVERSION_ID=24.04\n"),
-		"var/lib/dpkg/status": []byte(fmt.Sprintf("Package: openssl\nStatus: install ok installed\nArchitecture: amd64\nVersion: %s\nDescription: fixture\n\n", version)),
-	})
-	dbDir := filepath.Join(dir, "osv-scalibr", "Ubuntu")
-	if err := os.MkdirAll(dbDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	var zipped bytes.Buffer
-	zw := zip.NewWriter(&zipped)
-	w, err := zw.Create("OSVPY-TEST-0001.json")
+	layer, err := tarball.LayerFromReader(bytes.NewReader(buf.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = w.Write([]byte(`{"id":"OSVPY-TEST-0001","modified":"2026-01-01T00:00:00Z","affected":[{"package":{"name":"openssl","ecosystem":"Ubuntu:24.04"},"ranges":[{"type":"ECOSYSTEM","events":[{"introduced":"0"},{"fixed":"3.0.0-2"}]}]}]}`)); err != nil {
+	img, err := mutate.AppendLayers(empty.Image, layer)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := zw.Close(); err != nil {
+	config, err := img.ConfigFile()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dbDir, "all.zip"), zipped.Bytes(), 0600); err != nil {
+	config.OS, config.Architecture = "linux", "amd64"
+	config.History = []v1.History{{CreatedBy: "fixture"}}
+	img, err = mutate.ConfigFile(img, config)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return request{Image: path, Source: "docker_archive", Offline: true, DatabasePath: dir}
+	return img
 }
 
-func fixtureImage(t *testing.T, dir string, files map[string][]byte) string {
+func fixtureRegistry(t *testing.T, img v1.Image) string {
 	t.Helper()
-	layer := fixtureTar(t, files)
-	config := fmt.Sprintf(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:%x"]},"history":[{"created_by":"fixture"}],"config":{}}`, sha256.Sum256(layer))
-	archive := fixtureTar(t, map[string][]byte{
-		"config.json": []byte(config), "layer.tar": layer,
-		"manifest.json": []byte(`[{"Config":"config.json","RepoTags":["fixture:latest"],"Layers":["layer.tar"]}]`),
-	})
-	path := filepath.Join(dir, "fixture.tar")
-	if err := os.WriteFile(path, archive, 0600); err != nil {
+	server := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
+	t.Cleanup(server.Close)
+	ref, err := name.ParseReference(strings.TrimPrefix(server.URL, "http://") + "/fixture:latest")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
-}
-
-// Exercise concurrent native requests under the Go race detector. Python's
-// functional tests cover reporting/options; the standalone stress script covers
-// repeated calls and memory growth.
-func TestConcurrentScansKeepInstalledVersionsSeparate(t *testing.T) {
-	for _, version := range []string{"3.0.0-0", "3.0.0-1"} {
-		input := offlineRequest(t, version)
-		t.Run(version, func(t *testing.T) {
-			t.Parallel()
-			result := execute(input)
-			if result.Error != nil {
-				t.Fatalf("scan failed: %+v", result.Error)
-			}
-			pkg := result.Result.Results[0].Packages[0]
-			if pkg.Package.Version != version {
-				t.Fatalf("installed version: got %q, want %q", pkg.Package.Version, version)
-			}
-			if pkg.Vulnerabilities[0].GetId() != "OSVPY-TEST-0001" {
-				t.Fatal("expected fixture vulnerability")
-			}
-		})
+	if err := remote.Write(ref, img); err != nil {
+		t.Fatal(err)
 	}
+	return ref.Name()
 }
