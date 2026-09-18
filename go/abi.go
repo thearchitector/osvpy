@@ -13,10 +13,18 @@ import "C"
 import (
 	"encoding/json"
 	"runtime/cgo"
+	"sync/atomic"
 	"unsafe"
 )
 
 const abiVersion = 6
+
+// Count roots held across the Python boundary, not Go heap allocations. This
+// makes lifetime checks independent of Go GC and the runtime's heap reuse.
+var liveResults atomic.Uint64
+
+//export osv_result_count
+func osv_result_count() C.uint64_t { return C.uint64_t(liveResults.Load()) }
 
 func guard(status *C.int) {
 	if p := recover(); p != nil {
@@ -85,6 +93,7 @@ func osv_batch_finish(handle C.uintptr_t, out *C.uintptr_t) (status C.int) {
 		return C.int(s)
 	}
 	*out = C.uintptr_t(cgo.NewHandle(r))
+	liveResults.Add(1)
 	return 0
 }
 
@@ -92,6 +101,7 @@ func osv_batch_finish(handle C.uintptr_t, out *C.uintptr_t) (status C.int) {
 func osv_result_release(handle C.uintptr_t) (status C.int) {
 	defer guard(&status)
 	cgo.Handle(handle).Delete()
+	liveResults.Add(^uint64(0))
 	return 0
 }
 

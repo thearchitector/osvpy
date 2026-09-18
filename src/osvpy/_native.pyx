@@ -33,11 +33,14 @@ cdef int check(int status) except -1:
     return 0
 
 cdef class _Owner:
+    # Every view/sequence holds this owner strongly. Dropping the final Python
+    # reference (including through cyclic GC) removes the Go report's sole root.
     cdef uintptr_t handle
 
     def __dealloc__(self):
         if self.handle:
             osv_result_release(self.handle)
+            self.handle = 0
 
 cdef class _View:
     cdef _Owner owner
@@ -617,38 +620,42 @@ def scan(bytes payload not None, CancellationController controller not None):
     cdef size_t size = len(payload)
     cdef int status
     try:
+        try:
+            if controller.cancelled():
+                check(4)
+            with nogil:
+                status = osv_batch_create(data, size, &operation)
+            check(status)
+            if not controller.publish(operation):
+                check(4)
+            with nogil:
+                status = osv_batch_start(operation)
+            check(status)
+            with nogil:
+                status = osv_batch_wait(operation)
+            check(status)
+            with nogil:
+                status = osv_batch_finish(operation, &result)
+            check(status)
+            owner.handle = result
+            result = 0
+        finally:
+            controller.detach()
+            # A Python signal can interrupt re-entry after finish returned a handle.
+            # Dispose of it unless ownership has already moved to the result owner.
+            if result:
+                with nogil:
+                    status = osv_result_release(result)
+                result = 0
+            if operation:
+                with nogil:
+                    status = osv_batch_release(operation)
+                check(status)
         if controller.cancelled():
             check(4)
-        with nogil:
-            status = osv_batch_create(data, size, &operation)
-        check(status)
-        if not controller.publish(operation):
-            check(4)
-        with nogil:
-            status = osv_batch_start(operation)
-        check(status)
-        with nogil:
-            status = osv_batch_wait(operation)
-        check(status)
-        with nogil:
-            status = osv_batch_finish(operation, &result)
-        check(status)
-        owner.handle = result
-        result = 0
+        return view(owner, 1, 0, 0)
     finally:
-        controller.detach()
-        # A Python signal can interrupt re-entry after finish returned a handle.
-        # Dispose of it unless ownership has already moved to the result owner.
-        if result:
-            with nogil:
-                status = osv_result_release(result)
-            result = 0
-        if operation:
-            with nogil:
-                status = osv_batch_release(operation)
-            check(status)
-    if controller.cancelled():
-        # Clear before raising: exception tracebacks must not own abandoned stores.
+        # Saved tracebacks must not retain abandoned reports, including on
+        # cancellation, cleanup errors, and failed Python view allocation.
+        # On success the returned view owns the same _Owner.
         owner = None
-        check(4)
-    return view(owner, 1, 0, 0)
