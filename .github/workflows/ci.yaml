@@ -31,11 +31,30 @@ jobs:
                   python-version: ${{ matrix.python }}
             - uses: astral-sh/setup-uv@v9.0.0
 
-            - name: Install package and test dependencies
-              run: uv sync --locked --no-editable --group dev --python "$(command -v python)"
+            - name: Build source distribution and wheel
+              run: uv build --python "$(command -v python)" --out-dir dist/unrepaired
+
+            - name: Repair Linux wheel for PyPI
+              if: runner.os == 'Linux'
+              run: uvx --with patchelf auditwheel repair dist/unrepaired/*.whl --wheel-dir dist
+
+            - name: Collect distributions
+              run: |
+                  cp dist/unrepaired/*.tar.gz dist/
+                  if [ "$RUNNER_OS" = "macOS" ]; then
+                      cp dist/unrepaired/*.whl dist/
+                  fi
+
+            - name: Validate distributions for publishing
+              run: uv publish --dry-run dist/*.whl dist/*.tar.gz
+
+            - name: Install wheel and test dependencies
+              run: |
+                  uv sync --locked --no-install-project --group dev --python "$(command -v python)"
+                  uv pip install --no-deps dist/*.whl
 
             - name: Run Python unit tests
-              run: uv run pytest
+              run: uv run --no-sync pytest
 
     go:
         runs-on: ubuntu-latest

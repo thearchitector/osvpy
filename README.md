@@ -239,3 +239,21 @@ Features available out of the box when integrating with Python:
 | In-process scanning, no separate executable                                                | ✅    | ❌ Install scanner separately   |
 | Async Python API with cancellation                                                         | ✅    | ❌ Write subprocess handling    |
 | Batch scanning                                                                             | ✅    | ❌ Write batch orchestration    |
+
+## Building distributions
+
+Source builds require Go (see `go/go.mod`), Git, and a C compiler. `uv build`
+builds a source archive and then a wheel from that archive.
+
+Linux wheels need [repairing for PyPI](https://scikit-build-core.readthedocs.io/en/stable/guide/build.html#repairing):
+
+```bash
+uv build
+uvx --with patchelf auditwheel repair dist/*.whl --wheel-dir wheelhouse
+uv publish --dry-run dist/*.tar.gz wheelhouse/*.whl
+uv publish dist/*.tar.gz wheelhouse/*.whl
+```
+
+Publish the repaired wheel from `wheelhouse`. Its minimum glibc version depends
+on the build environment; use a manylinux container to target older Linux
+systems. On macOS, publish the wheel in `dist` directly.
