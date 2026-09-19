@@ -42,7 +42,7 @@ explicit_package_bases = true
 files = ["src/osvpy", "tests", "explore_toolkit"]
 strict = true
 mypy_path = ["src"]
-exclude = ["explore_toolkit/experiments", "explore_toolkit/results", "experiments"]
+exclude = ["explore_toolkit/experiments", "explore_toolkit/results"]
 
 [tool.ruff]
 unsafe-fixes = false
@@ -77,8 +77,8 @@ install.strip = true
 wheel.packages = ["src/osvpy"]
 wheel.exclude = ["**/*.pyc", "**/__pycache__/**", "**/*.dSYM/**"]
 sdist.inclusion-mode = "explicit"
-sdist.include = ["pyproject.toml", "go/*.go", "go/patches/*.patch", "go/go.mod", "go/go.sum", "src/osvpy/*.py", "src/osvpy/*.pyx", "src/osvpy/*.pxd", "src/osvpy/*.pyi", "src/osvpy/py.typed", "CMakeLists.txt", "uv.lock"]
+sdist.include = ["pyproject.toml", "go/*.go", "go/patches/*.patch", "go/go.mod", "go/go.sum", "src/osvpy/*.py", "src/osvpy/*.pyx", "src/osvpy/*.pxd", "src/osvpy/*.pyi", "src/osvpy/py.typed", "CMakeLists.txt"]
 
 [build-system]
-requires = ["scikit-build-core>=1.0.3,<1.1", "Cython==3.3.0"]
+requires = ["scikit-build-core>=1.0.3,<1.1", "Cython>=3.3.0,<4"]
 build-backend = "scikit_build_core.build"

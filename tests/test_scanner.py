@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from threading import Event
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -103,10 +104,10 @@ def test_scan_encodes_documented_defaults(backend: "Callable[..., None]") -> Non
         return cast("osvpy.BatchResult", object())
 
     backend(work)
-    asyncio.run(osvpy.scan())
+    asyncio.run(osvpy.scan("example:latest"))
 
     assert captured == {
-        "inputs": [],
+        "inputs": ["example:latest"],
         "all_packages": False,
         "allowed_licenses": None,
         "auth": None,
@@ -150,7 +151,42 @@ def test_scan_cancellation_wins_over_worker_failure(
 @pytest.mark.parametrize("workers", [0, -1])
 def test_scan_rejects_nonpositive_worker_limit(workers: int) -> None:
     with pytest.raises(ValueError, match="positive"):
+        asyncio.run(osvpy.scan("example:latest", workers=workers))
+
+
+@pytest.mark.parametrize("workers", [None, 1])
+def test_scan_rejects_empty_batch(
+    backend: "Callable[..., None]", workers: int | None
+) -> None:
+    def unexpected(payload: bytes, controller: Controller) -> osvpy.BatchResult:
+        pytest.fail("empty batches must not reach the backend")
+
+    backend(unexpected)
+    with pytest.raises(ValueError, match="at least one image"):
         asyncio.run(osvpy.scan(workers=workers))
+
+
+@pytest.mark.parametrize(
+    ("cpus", "image_count", "expected"),
+    [(None, 8, 2), (1, 8, 2), (2, 8, 2), (3, 8, 3), (8, 8, 4), (8, 1, 1), (8, 2, 2)],
+)
+def test_scan_selects_automatic_workers(
+    backend: "Callable[..., None]",
+    monkeypatch: pytest.MonkeyPatch,
+    cpus: int | None,
+    image_count: int,
+    expected: int,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def work(payload: bytes, controller: Controller) -> osvpy.BatchResult:
+        captured.update(json.loads(payload))
+        return cast("osvpy.BatchResult", object())
+
+    backend(work)
+    monkeypatch.setattr(os, "process_cpu_count", lambda: cpus)
+    asyncio.run(osvpy.scan(*(["example:latest"] * image_count), workers=None))
+    assert captured["workers"] == expected
 
 
 def test_cancellation_waits_for_work_to_finish(backend: "Callable[..., None]") -> None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -32,13 +33,18 @@ async def scan(
     languages: "LanguageSelection | None" = None,
     all_packages: bool = False,
     allowed_licenses: "Collection[str] | None" = None,
-    workers: int = 1,
+    workers: int | None = None,
     auth: "RegistryAuth | None" = None,
     platform: str | None = None,
 ) -> "BatchResult":
-    """Scan registry images in input order. Cancellation waits for native cleanup."""
-    if workers < 1:
+    """Scan one or more registry images. Cancellation waits for native cleanup."""
+    if not images:
+        raise ValueError("at least one image is required")
+    if workers is None:
+        workers = min(len(images), max(2, min(4, os.process_cpu_count() or 0)))
+    elif workers < 1:
         raise ValueError("workers must be positive")
+
     # Immutable encoded request is the ownership boundary with the executor.
     payload = json.dumps(
         {

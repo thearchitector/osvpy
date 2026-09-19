@@ -48,7 +48,7 @@ for image in batch.images:
 
 `scan()` returns a `BatchResult` with one image result per input, in input order.
 Repeated inputs have separate image results. Calling `scan()` without images
-returns an empty batch. The examples below use `await` inside an async function
+raises `ValueError`. The examples below use `await` inside an async function
 or notebook.
 
 ### Scan options
@@ -57,7 +57,7 @@ Keyword options apply to every image in the call.
 
 | Option             | Default                | Purpose                                                          |
 | ------------------ | ---------------------- | ---------------------------------------------------------------- |
-| `workers`          | `1`                    | Maximum number of images scanned concurrently; must be positive. |
+| `workers`          | `None` (auto)          | Maximum number of images scanned concurrently; a positive integer or `None` for automatic selection. |
 | `all_packages`     | `False`                | Include packages without vulnerability or license findings.      |
 | `languages`        | `None`                 | Select language families or individual package formats.          |
 | `allowed_licenses` | `None`                 | Evaluate packages against an SPDX license allowlist.             |
@@ -83,7 +83,11 @@ Registry references accept tags or digests. Supply credentials through
 
 Use `workers` to limit concurrency within a batch. Separate calls can run
 concurrently, and completed results can be read from multiple threads.
-Concurrency limits apply to each call separately.
+Concurrency limits apply to each call separately. `None` selects the usable CPU
+count bounded between two and four, then capped at the number of input images.
+If the CPU count is unavailable, the automatic limit is two before the image
+count cap. Set `workers=1` for serial scanning; zero and negative values raise
+`ValueError`.
 
 Set a deadline with `asyncio.timeout()` or `asyncio.wait_for()`:
 
