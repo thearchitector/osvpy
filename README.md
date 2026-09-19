@@ -55,14 +55,14 @@ or notebook.
 
 Keyword options apply to every image in the call.
 
-| Option             | Default                | Purpose                                                          |
-| ------------------ | ---------------------- | ---------------------------------------------------------------- |
+| Option             | Default                | Purpose                                                                                              |
+| ------------------ | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | `workers`          | `None` (auto)          | Maximum number of images scanned concurrently; a positive integer or `None` for automatic selection. |
-| `all_packages`     | `False`                | Include packages without vulnerability or license findings.      |
-| `languages`        | `None`                 | Select language families or individual package formats.          |
-| `allowed_licenses` | `None`                 | Evaluate packages against an SPDX license allowlist.             |
-| `auth`             | `None`                 | Supply registry credentials with `RegistryAuth`.                 |
-| `platform`         | `None` (`linux/amd64`) | Select the image platform, such as `"linux/arm64"`.              |
+| `all_packages`     | `False`                | Include packages without vulnerability or license findings.                                          |
+| `languages`        | `None`                 | Select language families or individual package formats.                                              |
+| `allowed_licenses` | `None`                 | Evaluate packages against an SPDX license allowlist.                                                 |
+| `auth`             | `None`                 | Supply registry credentials with `RegistryAuth`.                                                     |
+| `platform`         | `None` (`linux/amd64`) | Select the image platform, such as `"linux/arm64"`.                                                  |
 
 ### Private registries and platforms
 
@@ -227,14 +227,15 @@ Library exceptions derive from `osvpy.OSVError`.
 
 ## Comparison
 
-- **osvpy** reduces the code needed to integrate scanning into a Python application. The tradeoff is that scanning shares the application's process, memory budget, and failure boundary.
-- **Calling the OSV-Scanner CLI** gives each scan a separate process that you can monitor, limit, or terminate independently. The tradeoff is managing that process and translating its output into application data.
+Features available out of the box when integrating with Python:
 
-| Tradeoff                | osvpy                                                                                                                              | Calling the CLI from Python                                                                                          |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Integration effort      | Typed results and async cancellation reduce orchestration and parsing code.                                                        | You manage arguments, stdout/stderr, [exit codes, and JSON parsing](https://google.github.io/osv-scanner/output/).   |
-| Per-call overhead       | Avoids starting a scanner process and serializing a full report to JSON for each call. Reading result properties still has a cost. | Adds process startup and output parsing; that overhead may be small compared with the scan itself.                   |
-| Failure isolation       | A native crash can bring down the Python application.                                                                              | A scanner crash is contained in the child process; the application can inspect its exit status and retry.            |
-| Resource control        | Worker limits are convenient, but scans share the application's memory budget. Cancellation waits for scanning to stop.            | Separate processes allow OS-level resource limits and forced termination, with process cleanup handled by your code. |
-| Memory lifetime         | Related images can share report data, but retaining one result object keeps its batch in memory.                                   | Scanner memory is released when the process exits; captured output and parsed results still occupy Python memory.    |
-| Deployment and upgrades | One Python package to install on supported platforms; scanner upgrades come through library releases.                              | Another executable to distribute and version, but it can be upgraded independently of the Python application.        |
+| Feature                                                                                    | osvpy | OSV-Scanner CLI                 |
+| ------------------------------------------------------------------------------------------ | ----- | ------------------------------- |
+| Container vulnerability and license scanning                                               | ✅    | ✅                              |
+| [Source directory, lockfile, and SBOM inputs](https://google.github.io/osv-scanner/usage/) | ❌    | ✅                              |
+| Typed Python results                                                                       | ✅    | ❌ Parse JSON yourself          |
+| Cross-image result relationships                                                           | ✅    | ❌ Build relationships yourself |
+| [HTML and SARIF reports](https://google.github.io/osv-scanner/output/)                     | ❌    | ✅                              |
+| In-process scanning, no separate executable                                                | ✅    | ❌ Install scanner separately   |
+| Async Python API with cancellation                                                         | ✅    | ❌ Write subprocess handling    |
+| Batch scanning                                                                             | ✅    | ❌ Write batch orchestration    |
