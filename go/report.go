@@ -78,22 +78,23 @@ type reportImage struct {
 	Diagnostics []nativeError `json:"diagnostics,omitempty"`
 }
 type occurrenceRow struct{ Image, Package, Context, License uint32 }
-type findingRow struct{ Occurrence, Advisory, Fix, Assessment, Vulnerability uint32 }
+type findingRow struct{ Occurrence, Advisory, Fix, Assessment uint32 }
 
 type reportStore struct {
-	Indexes         []reportIndex         `json:"indexes"`
-	Images          []reportImage         `json:"images,omitempty"`
-	Packages        []reportPackage       `json:"packages,omitempty"`
-	Vulnerabilities []reportVulnerability `json:"vulnerabilities,omitempty"`
-	AdvisorySources []reportAdvisory      `json:"advisory_sources,omitempty"`
-	Contexts        []reportContext       `json:"contexts,omitempty"`
-	Assessments     []reportAssessment    `json:"assessments,omitempty"`
-	Licenses        []reportLicense       `json:"licenses,omitempty"`
-	Fixes           []reportFix           `json:"fixes,omitempty"`
-	// Occurrences: image, package, context, license. Findings: occurrence,
-	// advisory source, fix evidence, assessment, vulnerability group.
-	Occurrences []occurrenceRow `json:"occurrences,omitempty"`
-	Findings    []findingRow    `json:"findings,omitempty"`
+	Indexes                 []reportIndex
+	Images                  slabs[reportImage]
+	Packages                slabs[storedPackage]
+	Vulnerabilities         slabs[storedVulnerability]
+	AdvisorySources         slabs[storedAdvisory]
+	Contexts                slabs[storedContext]
+	Assessments             slabs[storedAssessment]
+	Licenses                slabs[storedLicense]
+	Fixes                   slabs[storedFix]
+	Occurrences             slabs[occurrenceRow]
+	Findings                slabs[findingRow]
+	AdvisoryVulnerabilities slabs[uint32]
+	Strings                 slabs[string]
+	Words                   slabs[uint32]
 }
 
 func unique(values []string) []string {

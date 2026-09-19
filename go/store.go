@@ -2,54 +2,44 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"math"
-	"reflect"
 	"slices"
 	"strings"
 
 	"github.com/ossf/osv-schema/bindings/go/osvschema"
 )
 
-type table[T any] struct{ hashes map[[32]byte][]int }
+// Comparable compact keys use Go's typed equality, including on hash collisions.
+type table[T comparable] struct{ ids map[T]int }
 
-func (t *table[T]) intern(dst *[]T, value T) int {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
+func (t *table[T]) intern(dst *slabs[T], value T) int {
+	if i, ok := t.ids[value]; ok {
+		return i
 	}
-	h := sha256.Sum256(raw)
-	if t.hashes == nil {
-		t.hashes = map[[32]byte][]int{}
+	if t.ids == nil {
+		t.ids = make(map[T]int)
 	}
-	for _, i := range t.hashes[h] {
-		if reflect.DeepEqual(value, (*dst)[i]) {
-			return i
-		}
-	}
-	i := len(*dst)
-	checked(i)
-	*dst = append(*dst, value)
-	t.hashes[h] = append(t.hashes[h], i)
+	i := dst.Append(value)
+	t.ids[value] = i
 	return i
 }
 
 type batchBuilder struct {
 	ctx             context.Context
 	report          reportStore
-	packages        map[reportPackage]int
-	advisory        table[reportAdvisory]
+	packages        table[storedPackage]
+	payload         payloadBuilder
+	advisory        table[storedAdvisory]
 	imageAdvisories map[*reportAdvisory]int
-	context         table[reportContext]
-	assessment      table[reportAssessment]
-	license         table[reportLicense]
-	fix             table[reportFix]
+	context         table[storedContext]
+	assessment      table[storedAssessment]
+	license         table[storedLicense]
+	fix             table[storedFix]
 	parent          map[string]string
 }
 
 func newBuilder() *batchBuilder {
-	return &batchBuilder{report: reportStore{}, packages: map[reportPackage]int{}, parent: map[string]string{}}
+	return &batchBuilder{report: reportStore{}, parent: map[string]string{}}
 }
 func checked(v int) uint32 {
 	if v < 0 || uint64(v) > math.MaxUint32 {
@@ -249,35 +239,29 @@ func (p *pendingImage) union(ids []string) { p.aliases = append(p.aliases, ids) 
 
 func (b *batchBuilder) occurrence(pkg reportPackage, ctx reportContext, lic reportLicense) {
 	checkContext(b.ctx)
-	pi, ok := b.packages[pkg]
-	if !ok {
-		pi = len(b.report.Packages)
-		checked(pi)
-		b.report.Packages = append(b.report.Packages, pkg)
-		b.packages[pkg] = pi
-	}
-	ci := b.context.intern(&b.report.Contexts, ctx)
-	li := b.license.intern(&b.report.Licenses, lic)
-	checked(len(b.report.Occurrences) + 1)
-	b.report.Occurrences = append(b.report.Occurrences, occurrenceRow{checked(len(b.report.Images)), checked(pi), checked(ci), checked(li)})
+	pi := b.packages.intern(&b.report.Packages, b.packPackage(pkg))
+	ci := b.context.intern(&b.report.Contexts, b.packContext(ctx))
+	li := b.license.intern(&b.report.Licenses, b.packLicense(lic))
+	checked(b.report.Occurrences.Len() + 1)
+	b.report.Occurrences.Append(occurrenceRow{checked(b.report.Images.Len()), checked(pi), checked(ci), checked(li)})
 }
 func (b *batchBuilder) finding(advisory *reportAdvisory, fix reportFix, assessment reportAssessment) {
 	checkContext(b.ctx)
 	ai, ok := b.imageAdvisories[advisory]
 	if !ok {
-		ai = b.advisory.intern(&b.report.AdvisorySources, *advisory)
+		ai = b.advisory.intern(&b.report.AdvisorySources, b.packAdvisory(*advisory))
 		b.imageAdvisories[advisory] = ai
 	}
-	fi := b.fix.intern(&b.report.Fixes, fix)
-	si := b.assessment.intern(&b.report.Assessments, assessment)
-	checked(len(b.report.Findings) + 1)
-	b.report.Findings = append(b.report.Findings, findingRow{checked(len(b.report.Occurrences) - 1), checked(ai), checked(fi), checked(si), 0})
+	fi := b.fix.intern(&b.report.Fixes, b.packFix(fix))
+	si := b.assessment.intern(&b.report.Assessments, b.packAssessment(assessment))
+	checked(b.report.Findings.Len() + 1)
+	b.report.Findings.Append(findingRow{checked(b.report.Occurrences.Len() - 1), checked(ai), checked(fi), checked(si)})
 }
 func (b *batchBuilder) add(req request, resp response) {
 	b.imageAdvisories = make(map[*reportAdvisory]int)
 	defer func() { b.imageAdvisories = nil }()
 	im := projectImage(b.ctx, req, resp, b)
-	b.report.Images = append(b.report.Images, im)
+	b.report.Images.Append(im)
 }
 func (b *batchBuilder) merge(p pendingImage) {
 	b.imageAdvisories = make(map[*reportAdvisory]int)
@@ -291,9 +275,9 @@ func (b *batchBuilder) merge(p pendingImage) {
 			b.finding(f.advisory, f.fix, f.assessment)
 		}
 	}
-	b.report.Images = append(b.report.Images, p.image)
+	b.report.Images.Append(p.image)
 }
-func (b *batchBuilder) finish() reportStore {
+func (b *batchBuilder) finishAliases() {
 	groups := map[string][]string{}
 	for id := range b.parent {
 		checkContext(b.ctx)
@@ -307,19 +291,25 @@ func (b *batchBuilder) finish() reportStore {
 	slices.Sort(roots)
 	ids := map[string]int{}
 	for _, root := range roots {
-		ids[root] = len(b.report.Vulnerabilities)
+		ids[root] = b.report.Vulnerabilities.Len()
 		aliases := unique(groups[root])
 		aliases = slices.DeleteFunc(aliases, func(s string) bool { return s == root })
-		b.report.Vulnerabilities = append(b.report.Vulnerabilities, reportVulnerability{root, aliases})
+		b.report.Vulnerabilities.Append(b.packVulnerability(reportVulnerability{root, aliases}))
 	}
-	for i := 0; i < len(b.report.Findings); i++ {
+	for i := 0; i < b.report.AdvisorySources.Len(); i++ {
 		checkContext(b.ctx)
-		ai := b.report.Findings[i].Advisory
-		vi := ids[b.root(b.report.AdvisorySources[ai].ID)]
-		b.report.Findings[i].Vulnerability = checked(vi)
+		vi := ids[b.root(b.report.stringAt(b.report.AdvisorySources.At(i).ID))]
+		b.report.AdvisoryVulnerabilities.Append(checked(vi))
 	}
-	b.report.buildIndexes(b.ctx)
-	r := b.report
+}
+
+func (b *batchBuilder) finish() reportStore {
+	b.finishAliases()
+	// Transfer ownership and drop all ingestion-only maps before allocating
+	// indexes. This makes them collectible, without promising immediate RSS
+	// reduction or forcing a global garbage collection.
+	r, ctx := b.report, b.ctx
 	*b = batchBuilder{}
+	r.buildIndexes(ctx)
 	return r
 }

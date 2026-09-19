@@ -74,7 +74,8 @@ func TestOperationInputOrder(t *testing.T) {
 	if op.wait() != 0 {
 		t.Fatal(op.wait())
 	}
-	for i, im := range op.report.Images {
+	for i := range op.report.Images.Len() {
+		im := op.report.Images.At(i)
 		if im.Requested != fmt.Sprint(i) {
 			t.Fatal("out-of-order merge")
 		}

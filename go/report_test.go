@@ -18,13 +18,13 @@ func TestAliasesRetainPackageSpecificFixes(t *testing.T) {
 	b := newBuilder()
 	b.add(request{Image: "fixture"}, response{Result: r})
 	out := b.finish()
-	if len(out.Vulnerabilities) != 1 || len(out.Findings) != 2 {
+	if out.Vulnerabilities.Len() != 1 || out.Findings.Len() != 2 {
 		t.Fatal("aliases must group without dropping package findings")
 	}
 	for i, want := range [][]string{{"2.0", "3.0"}, {"3.0"}} {
-		fix := out.Findings[i].Fix
-		if !reflect.DeepEqual(out.Fixes[fix].Versions, want) {
-			t.Fatalf("package %d fixes: %v", i, out.Fixes[fix])
+		fix := out.Findings.At(int(i)).Fix
+		if !reflect.DeepEqual(out.fixAt(int(fix)).Versions, want) {
+			t.Fatalf("package %d fixes: %v", i, out.fixAt(int(fix)))
 		}
 	}
 }
@@ -81,23 +81,23 @@ func TestBatchAliasMerge(t *testing.T) {
 	b.add(request{Image: "three"}, response{Result: r})
 	b.add(request{Image: "bad"}, failure("scan_error", "fixture"))
 	out := b.finish()
-	if len(out.Images) != 4 || len(out.Vulnerabilities) != 1 || out.Vulnerabilities[0].ID != "CVE-2026-0" {
+	if out.Images.Len() != 4 || out.Vulnerabilities.Len() != 1 || out.vulnerabilityAt(int(0)).ID != "CVE-2026-0" {
 		t.Fatal("incorrect batch images or merged vulnerability")
 	}
-	if *out.AdvisorySources[0].Modified != "2026-01-01T00:00:00.123456789Z" {
+	if *out.advisoryAt(int(0)).Modified != "2026-01-01T00:00:00.123456789Z" {
 		t.Fatal("lost timestamp precision")
 	}
 }
 func TestEmptyAndAllFailed(t *testing.T) {
 	b := newBuilder()
 	r := b.finish()
-	if len(r.Images) != 0 {
+	if r.Images.Len() != 0 {
 		t.Fatal("empty")
 	}
 	b = newBuilder()
 	b.add(request{Image: "bad"}, failure("scan_error", "bad"))
 	r = b.finish()
-	if r.Images[0].Status != "failed" || len(r.Findings) != 0 {
+	if r.Images.At(int(0)).Status != "failed" || r.Findings.Len() != 0 {
 		t.Fatal("failed")
 	}
 }
@@ -108,15 +108,15 @@ func TestUnknownLicenseAndAbsentAssessment(t *testing.T) {
 	b.add(request{Image: "unknown", AllowedLicenses: []string{}, AllPackages: true}, response{Result: r})
 	b.add(request{Image: "disabled", AllPackages: true}, response{Result: r})
 	out := b.finish()
-	unknown := out.Licenses[out.Occurrences[0].License]
-	disabled := out.Licenses[out.Occurrences[1].License]
+	unknown := out.licenseAt(int(out.Occurrences.At(0).License))
+	disabled := out.licenseAt(int(out.Occurrences.At(1).License))
 	if unknown.Status != "unknown" || len(unknown.Licenses) != 0 || unknown.Policy == nil {
 		t.Fatalf("missing licenses must remain unknown: %+v", unknown)
 	}
 	if disabled.Status != "not_evaluated" || disabled.Policy != nil {
 		t.Fatalf("absent evaluation must remain distinct: %+v", disabled)
 	}
-	if len(out.Images[0].Diagnostics) != 1 || out.Images[0].Diagnostics[0].Code != "unknown_license" {
+	if len(out.Images.At(int(0)).Diagnostics) != 1 || out.Images.At(int(0)).Diagnostics[0].Code != "unknown_license" {
 		t.Fatal("missing uncertainty diagnostic")
 	}
 }

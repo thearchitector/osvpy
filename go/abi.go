@@ -122,53 +122,102 @@ func refValue(kind, row, sub uint32) nativeValue {
 	return nativeValue{tag: 4, kind: kind, row: row, sub: sub}
 }
 func seqValue(n int) nativeValue { return nativeValue{tag: 5, number: float64(checked(n))} }
+
+func (r *reportStore) optionalStringValue(id uint32) nativeValue {
+	if id == 0 {
+		return nativeValue{}
+	}
+	return textValue(r.stringAt(id))
+}
+func optionalBoolValue(tag uint8) nativeValue {
+	if tag == 0 {
+		return nativeValue{}
+	}
+	return boolValue(tag == 2)
+}
+func (r *reportStore) stringListValue(s span, index int64) nativeValue {
+	if index < 0 {
+		return seqValue(int(s.Count))
+	}
+	if uint64(index) >= uint64(s.Count) {
+		panic("invalid index")
+	}
+	return textValue(r.stringAt(*r.Words.At(int(s.Start) + int(index))))
+}
+func recordListValue(s span, width, kind, row uint32, index int64) nativeValue {
+	n := s.Count / width
+	if index < 0 {
+		return seqValue(int(n))
+	}
+	if uint64(index) >= uint64(n) {
+		panic("invalid index")
+	}
+	return refValue(kind, row, uint32(index))
+}
+
+func (r *reportStore) indexValue(id int, row, kind uint32, index int64) nativeValue {
+	idx := &r.Indexes[id]
+	start, stop := *idx.Offsets.At(int(row)), *idx.Offsets.At(int(row) + 1)
+	if index < 0 {
+		return seqValue(int(stop - start))
+	}
+	if uint64(index) >= uint64(stop-start) {
+		panic("invalid index")
+	}
+	member := start + uint32(index)
+	if !idx.Range {
+		member = *idx.Members.At(int(member))
+	}
+	return refValue(kind, member, 0)
+}
+
 func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeValue {
 	switch kind {
 	case 1:
 		switch field {
 		case 1:
 			if index < 0 {
-				return seqValue(len(r.Images))
+				return seqValue(r.Images.Len())
 			}
-			if uint64(index) >= uint64(len(r.Images)) {
+			if uint64(index) >= uint64(r.Images.Len()) {
 				panic("invalid index")
 			}
 			return refValue(2, uint32(index), 0)
 		case 2:
 			if index < 0 {
-				return seqValue(len(r.Packages))
+				return seqValue(r.Packages.Len())
 			}
-			if uint64(index) >= uint64(len(r.Packages)) {
+			if uint64(index) >= uint64(r.Packages.Len()) {
 				panic("invalid index")
 			}
 			return refValue(3, uint32(index), 0)
 		case 3:
 			if index < 0 {
-				return seqValue(len(r.Vulnerabilities))
+				return seqValue(r.Vulnerabilities.Len())
 			}
-			if uint64(index) >= uint64(len(r.Vulnerabilities)) {
+			if uint64(index) >= uint64(r.Vulnerabilities.Len()) {
 				panic("invalid index")
 			}
 			return refValue(4, uint32(index), 0)
 		case 4:
 			if index < 0 {
-				return seqValue(len(r.AdvisorySources))
+				return seqValue(r.AdvisorySources.Len())
 			}
-			if uint64(index) >= uint64(len(r.AdvisorySources)) {
+			if uint64(index) >= uint64(r.AdvisorySources.Len()) {
 				panic("invalid index")
 			}
 			return refValue(5, uint32(index), 0)
 		case 5:
 			if index < 0 {
-				return seqValue(len(r.Findings))
+				return seqValue(r.Findings.Len())
 			}
-			if uint64(index) >= uint64(len(r.Findings)) {
+			if uint64(index) >= uint64(r.Findings.Len()) {
 				panic("invalid index")
 			}
 			return refValue(7, uint32(index), 0)
 		}
 	case 2:
-		v := &r.Images[row]
+		v := r.Images.At(int(row))
 		switch field {
 		case 1:
 			return textValue(v.Requested)
@@ -190,300 +239,84 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 			}
 			return refValue(13, row, uint32(index))
 		case 6:
-			idx := &r.Indexes[0]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(6, member, 0)
+			return r.indexValue(0, row, 6, index)
 		case 7:
-			idx := &r.Indexes[1]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(7, member, 0)
+			return r.indexValue(1, row, 7, index)
 		case 8:
-			idx := &r.Indexes[3]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(3, member, 0)
+			return r.indexValue(3, row, 3, index)
 		case 9:
-			idx := &r.Indexes[4]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(3, member, 0)
+			return r.indexValue(4, row, 3, index)
 		case 10:
-			idx := &r.Indexes[5]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(3, member, 0)
+			return r.indexValue(5, row, 3, index)
 		case 11:
-			idx := &r.Indexes[6]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(4, member, 0)
+			return r.indexValue(6, row, 4, index)
 		}
 	case 3:
-		v := &r.Packages[row]
+		v := r.Packages.At(int(row))
 		switch field {
 		case 1:
-			return textValue(v.Name)
+			return textValue(r.stringAt(v.Name))
 		case 2:
-			return textValue(v.Version)
+			return textValue(r.stringAt(v.Version))
 		case 3:
-			return textValue(v.Ecosystem)
+			return textValue(r.stringAt(v.Ecosystem))
 		case 4:
-			return textValue(v.Commit)
+			return textValue(r.stringAt(v.Commit))
 		case 5:
-			return textValue(v.OSPackageName)
+			return textValue(r.stringAt(v.OSPackageName))
 		case 6:
-			return textValue(v.PURL)
+			return textValue(r.stringAt(v.PURL))
 		case 7:
-			idx := &r.Indexes[7]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(7, row, 2, index)
 		case 8:
-			idx := &r.Indexes[8]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(8, row, 2, index)
 		case 9:
-			idx := &r.Indexes[9]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(9, row, 2, index)
 		case 10:
-			idx := &r.Indexes[10]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(10, row, 2, index)
 		case 11:
-			idx := &r.Indexes[15]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(7, member, 0)
+			return r.indexValue(15, row, 7, index)
 		}
 	case 4:
-		v := &r.Vulnerabilities[row]
+		v := r.Vulnerabilities.At(int(row))
 		switch field {
 		case 1:
-			return textValue(v.ID)
+			return textValue(r.stringAt(v.ID))
 		case 2:
-			if index < 0 {
-				return seqValue(len(v.Aliases))
-			}
-			if uint64(index) >= uint64(len(v.Aliases)) {
-				panic("invalid index")
-			}
-			return textValue(v.Aliases[index])
+			return r.stringListValue(v.Aliases, index)
 		case 3:
-			idx := &r.Indexes[11]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(11, row, 2, index)
 		case 4:
-			idx := &r.Indexes[13]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(7, member, 0)
+			return r.indexValue(13, row, 7, index)
 		}
 	case 5:
-		v := &r.AdvisorySources[row]
+		v := r.AdvisorySources.At(int(row))
 		switch field {
 		case 1:
-			return textValue(v.ID)
+			return textValue(r.stringAt(v.ID))
 		case 2:
-			if index < 0 {
-				return seqValue(len(v.Aliases))
-			}
-			if uint64(index) >= uint64(len(v.Aliases)) {
-				panic("invalid index")
-			}
-			return textValue(v.Aliases[index])
+			return r.stringListValue(v.Aliases, index)
 		case 3:
-			return textValue(v.Summary)
+			return textValue(r.stringAt(v.Summary))
 		case 4:
-			if v.Modified == nil {
-				return nativeValue{}
-			}
-			return textValue(*v.Modified)
+			return r.optionalStringValue(v.Modified)
 		case 5:
-			if v.Published == nil {
-				return nativeValue{}
-			}
-			return textValue(*v.Published)
+			return r.optionalStringValue(v.Published)
 		case 6:
-			if v.Withdrawn == nil {
-				return nativeValue{}
-			}
-			return textValue(*v.Withdrawn)
+			return r.optionalStringValue(v.Withdrawn)
 		case 7:
-			if v.DatabaseSeverity == nil {
-				return nativeValue{}
-			}
-			return textValue(*v.DatabaseSeverity)
+			return r.optionalStringValue(v.DatabaseSeverity)
 		case 8:
-			if index < 0 {
-				return seqValue(len(v.Severities))
-			}
-			if uint64(index) >= uint64(len(v.Severities)) {
-				panic("invalid index")
-			}
-			return refValue(14, row, uint32(index))
+			return recordListValue(v.Severities, 3, 14, row, index)
 		case 9:
-			if index < 0 {
-				return seqValue(len(v.References))
-			}
-			if uint64(index) >= uint64(len(v.References)) {
-				panic("invalid index")
-			}
-			return refValue(15, row, uint32(index))
+			return recordListValue(v.References, 2, 15, row, index)
 		case 10:
-			idx := &r.Indexes[12]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(2, member, 0)
+			return r.indexValue(12, row, 2, index)
 		case 11:
-			idx := &r.Indexes[14]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(7, member, 0)
+			return r.indexValue(14, row, 7, index)
 		}
 	case 6:
-		v := &r.Occurrences[row]
+		v := r.Occurrences.At(int(row))
 		switch field {
 		case 1:
 			return refValue(2, v.Image, 0)
@@ -494,22 +327,10 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 		case 4:
 			return refValue(10, v.License, 0)
 		case 5:
-			idx := &r.Indexes[2]
-			start, stop := idx.Offsets[row], idx.Offsets[row+1]
-			if index < 0 {
-				return seqValue(int(stop - start))
-			}
-			if uint64(index) >= uint64(stop-start) {
-				panic("invalid index")
-			}
-			member := start + uint32(index)
-			if !idx.Range {
-				member = idx.Members[member]
-			}
-			return refValue(7, member, 0)
+			return r.indexValue(2, row, 7, index)
 		}
 	case 7:
-		v := &r.Findings[row]
+		v := r.Findings.At(int(row))
 		switch field {
 		case 1:
 			return refValue(6, v.Occurrence, 0)
@@ -520,110 +341,63 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 		case 4:
 			return refValue(9, v.Assessment, 0)
 		case 5:
-			return refValue(4, v.Vulnerability, 0)
+			return refValue(4, *r.AdvisoryVulnerabilities.At(int(v.Advisory)), 0)
 		}
 	case 8:
-		v := &r.Contexts[row]
+		v := r.Contexts.At(int(row))
 		switch field {
 		case 1:
-			return textValue(v.Path)
+			return textValue(r.stringAt(v.Path))
 		case 2:
-			return textValue(v.SourceType)
+			return textValue(r.stringAt(v.SourceType))
 		case 3:
-			if v.Layer == nil {
-				return nativeValue{}
-			}
-			return textValue(*v.Layer)
+			return r.optionalStringValue(v.Layer)
 		case 4:
-			if index < 0 {
-				return seqValue(len(v.DependencyGroups))
-			}
-			if uint64(index) >= uint64(len(v.DependencyGroups)) {
-				panic("invalid index")
-			}
-			return textValue(v.DependencyGroups[index])
+			return r.stringListValue(v.DependencyGroups, index)
+
 		}
 	case 9:
-		v := &r.Assessments[row]
+		v := r.Assessments.At(int(row))
 		switch field {
 		case 1:
-			if v.Called == nil {
-				return nativeValue{}
-			}
-			return boolValue(*v.Called)
+			return optionalBoolValue(v.Called)
 		case 2:
-			if v.Unimportant == nil {
-				return nativeValue{}
-			}
-			return boolValue(*v.Unimportant)
+			return optionalBoolValue(v.Unimportant)
 		case 3:
-			return textValue(v.MaxSeverity)
+			return textValue(r.stringAt(v.MaxSeverity))
+
 		}
 	case 10:
-		v := &r.Licenses[row]
+		v := r.Licenses.At(int(row))
 		switch field {
 		case 1:
-			if index < 0 {
-				return seqValue(len(v.Licenses))
-			}
-			if uint64(index) >= uint64(len(v.Licenses)) {
-				panic("invalid index")
-			}
-			return textValue(v.Licenses[index])
+			return r.stringListValue(v.Licenses, index)
 		case 2:
-			if v.Policy == nil {
+			if v.Policy.Start == nilSpanStart {
 				return nativeValue{}
 			}
-			if index < 0 {
-				return seqValue(len(v.Policy))
-			}
-			if uint64(index) >= uint64(len(v.Policy)) {
-				panic("invalid index")
-			}
-			return textValue(v.Policy[index])
+			return r.stringListValue(v.Policy, index)
 		case 3:
-			if index < 0 {
-				return seqValue(len(v.Violations))
-			}
-			if uint64(index) >= uint64(len(v.Violations)) {
-				panic("invalid index")
-			}
-			return textValue(v.Violations[index])
+			return r.stringListValue(v.Violations, index)
 		case 4:
-			return textValue(v.Status)
+			return textValue(statusNames[v.Status])
+
 		}
 	case 11:
-		v := &r.Fixes[row]
+		v := r.Fixes.At(int(row))
 		switch field {
 		case 1:
-			if index < 0 {
-				return seqValue(len(v.Versions))
-			}
-			if uint64(index) >= uint64(len(v.Versions)) {
-				panic("invalid index")
-			}
-			return textValue(v.Versions[index])
+			return r.stringListValue(v.Versions, index)
 		case 2:
-			return textValue(v.Status)
+			return textValue(statusNames[v.Status])
 		case 3:
-			if index < 0 {
-				return seqValue(len(v.Severities))
-			}
-			if uint64(index) >= uint64(len(v.Severities)) {
-				panic("invalid index")
-			}
-			return refValue(16, row, uint32(index))
+			return recordListValue(v.Severities, 3, 16, row, index)
 		case 4:
-			if index < 0 {
-				return seqValue(len(v.Urgencies))
-			}
-			if uint64(index) >= uint64(len(v.Urgencies)) {
-				panic("invalid index")
-			}
-			return textValue(v.Urgencies[index])
+			return r.stringListValue(v.Urgencies, index)
+
 		}
 	case 12:
-		v := &r.Images[row].Metadata
+		v := r.Images.At(int(row)).Metadata
 		switch field {
 		case 1:
 			if index < 0 {
@@ -647,7 +421,7 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 			return boolValue(v.NoPackages)
 		}
 	case 13:
-		v := &r.Images[row].Diagnostics[sub]
+		v := r.Images.At(int(row)).Diagnostics[sub]
 		switch field {
 		case 1:
 			return textValue(v.Code)
@@ -655,33 +429,23 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 			return textValue(v.Message)
 		}
 	case 14:
-		v := &r.AdvisorySources[row].Severities[sub]
-		switch field {
-		case 1:
-			return textValue(v.Type)
-		case 2:
-			return textValue(v.Source)
-		case 3:
-			return textValue(v.Vector)
+		s := r.AdvisorySources.At(int(row)).Severities
+		if sub >= s.Count/3 || field < 1 || field > 3 {
+			panic("invalid property")
 		}
+		return textValue(r.stringAt(*r.Words.At(int(s.Start) + int(sub)*3 + int(field) - 1)))
 	case 15:
-		v := &r.AdvisorySources[row].References[sub]
-		switch field {
-		case 1:
-			return textValue(v.Type)
-		case 2:
-			return textValue(v.URL)
+		s := r.AdvisorySources.At(int(row)).References
+		if sub >= s.Count/2 || field < 1 || field > 2 {
+			panic("invalid property")
 		}
+		return textValue(r.stringAt(*r.Words.At(int(s.Start) + int(sub)*2 + int(field) - 1)))
 	case 16:
-		v := &r.Fixes[row].Severities[sub]
-		switch field {
-		case 1:
-			return textValue(v.Type)
-		case 2:
-			return textValue(v.Source)
-		case 3:
-			return textValue(v.Vector)
+		s := r.Fixes.At(int(row)).Severities
+		if sub >= s.Count/3 || field < 1 || field > 3 {
+			panic("invalid property")
 		}
+		return textValue(r.stringAt(*r.Words.At(int(s.Start) + int(sub)*3 + int(field) - 1)))
 	}
 	panic("invalid property")
 }

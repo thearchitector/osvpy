@@ -2,14 +2,30 @@ package main
 
 import (
 	"context"
-	"slices"
+	"sort"
 )
 
 type reportIndex struct {
-	Name    string   `json:"name"`
-	Offsets []uint32 `json:"offsets"`
-	Members []uint32 `json:"members"`
-	Range   bool     `json:"range"`
+	Name    string
+	Offsets slabs[uint32]
+	Members slabs[uint32]
+	Range   bool
+}
+
+type memberWindow struct {
+	members    *slabs[uint32]
+	start, end int
+	ctx        context.Context
+}
+
+func (w memberWindow) Len() int { return w.end - w.start }
+func (w memberWindow) Less(i, j int) bool {
+	return *w.members.At(w.start + i) < *w.members.At(w.start + j)
+}
+func (w memberWindow) Swap(i, j int) {
+	checkContext(w.ctx)
+	a, b := w.members.At(w.start+i), w.members.At(w.start+j)
+	*a, *b = *b, *a
 }
 
 func checkContext(ctx context.Context) {
@@ -18,50 +34,67 @@ func checkContext(ctx context.Context) {
 	}
 }
 
-// Build one relationship at a time with count/prefix-sum/fill. No per-key
-// lists or sets; the temporary membership allocation is compacted in place.
+// Count/prefix-sum/fill and sort/compact operate directly on segmented storage.
+// Compaction releases unused slabs without flattening the membership array.
 func makeIndex(ctx context.Context, name string, size int, contiguous bool, edges func(func(int, int))) reportIndex {
-	offsets := make([]uint32, size+1)
-	edges(func(key, value int) { offsets[key+1] = checked(int(offsets[key+1]) + 1) })
-	for i := 1; i < len(offsets); i++ {
+	var offsets slabs[uint32]
+	offsets.Resize(size + 1)
+	edges(func(key, value int) { p := offsets.At(key + 1); *p = checked(int(*p) + 1) })
+	for i := 1; i < offsets.Len(); i++ {
 		checkContext(ctx)
-		offsets[i] = checked(int(offsets[i]) + int(offsets[i-1]))
+		*offsets.At(i) = checked(int(*offsets.At(i)) + int(*offsets.At(i - 1)))
 	}
 	if contiguous {
-		return reportIndex{Name: name, Offsets: offsets, Members: []uint32{}, Range: true}
+		return reportIndex{Name: name, Offsets: offsets, Range: true}
 	}
-	members := make([]uint32, offsets[size])
-	cursor := slices.Clone(offsets[:size])
-	edges(func(key, value int) { members[cursor[key]] = checked(value); cursor[key]++ })
+	var members, cursor slabs[uint32]
+	members.Resize(int(*offsets.At(size)))
+	for i := range size {
+		cursor.Append(*offsets.At(i))
+	}
+	edges(func(key, value int) { p := cursor.At(key); *members.At(int(*p)) = checked(value); *p++ })
 	n := 0
+	window := memberWindow{members: &members, ctx: ctx}
 	for i := range size {
 		checkContext(ctx)
-		group := members[offsets[i]:offsets[i+1]]
-		slices.Sort(group)
-		group = slices.Compact(group)
-		offsets[i] = checked(n)
-		n += copy(members[n:], group)
+		start, end := int(*offsets.At(i)), int(*offsets.At(i + 1))
+		window.start, window.end = start, end
+		sort.Sort(&window)
+		*offsets.At(i) = checked(n)
+		var previous uint32
+		for j := start; j < end; j++ {
+			if j%1024 == 0 {
+				checkContext(ctx)
+			}
+			value := *members.At(j)
+			if j == start || value != previous {
+				*members.At(n) = value
+				n++
+				previous = value
+			}
+		}
 	}
-	offsets[size] = checked(n)
-	return reportIndex{Name: name, Offsets: offsets, Members: slices.Clone(members[:n])}
+	*offsets.At(size) = checked(n)
+	members.Truncate(n)
+	return reportIndex{Name: name, Offsets: offsets, Members: members}
 }
 
 func (r *reportStore) buildIndexes(ctx context.Context) {
-	occurrences, findings := len(r.Occurrences), len(r.Findings)
+	occurrences, findings := r.Occurrences.Len(), r.Findings.Len()
 	definitions := []struct {
 		name       string
 		size       int
 		contiguous bool
 	}{
-		{"image_occurrences", len(r.Images), true}, {"image_findings", len(r.Images), true},
+		{"image_occurrences", r.Images.Len(), true}, {"image_findings", r.Images.Len(), true},
 		{"occurrence_findings", occurrences, true},
-		{"image_packages", len(r.Images), false}, {"image_vulnerable_packages", len(r.Images), false},
-		{"image_noncompliant_packages", len(r.Images), false}, {"image_vulnerabilities", len(r.Images), false},
-		{"package_present_images", len(r.Packages), false}, {"package_vulnerable_images", len(r.Packages), false},
-		{"package_noncompliant_images", len(r.Packages), false}, {"package_affected_images", len(r.Packages), false},
-		{"vulnerability_affected_images", len(r.Vulnerabilities), false}, {"advisory_affected_images", len(r.AdvisorySources), false},
-		{"vulnerability_findings", len(r.Vulnerabilities), false}, {"advisory_findings", len(r.AdvisorySources), false},
-		{"package_findings", len(r.Packages), false},
+		{"image_packages", r.Images.Len(), false}, {"image_vulnerable_packages", r.Images.Len(), false},
+		{"image_noncompliant_packages", r.Images.Len(), false}, {"image_vulnerabilities", r.Images.Len(), false},
+		{"package_present_images", r.Packages.Len(), false}, {"package_vulnerable_images", r.Packages.Len(), false},
+		{"package_noncompliant_images", r.Packages.Len(), false}, {"package_affected_images", r.Packages.Len(), false},
+		{"vulnerability_affected_images", r.Vulnerabilities.Len(), false}, {"advisory_affected_images", r.AdvisorySources.Len(), false},
+		{"vulnerability_findings", r.Vulnerabilities.Len(), false}, {"advisory_findings", r.AdvisorySources.Len(), false},
+		{"package_findings", r.Packages.Len(), false},
 	}
 	for _, d := range definitions {
 		visit := func(edge func(int, int)) {
@@ -70,7 +103,7 @@ func (r *reportStore) buildIndexes(ctx context.Context) {
 					if o%1024 == 0 {
 						checkContext(ctx)
 					}
-					im, p, lic := int(r.Occurrences[o].Image), int(r.Occurrences[o].Package), int(r.Occurrences[o].License)
+					im, p, lic := int(r.Occurrences.At(o).Image), int(r.Occurrences.At(o).Package), int(r.Occurrences.At(o).License)
 					switch d.name {
 					case "image_occurrences":
 						edge(im, o)
@@ -79,7 +112,7 @@ func (r *reportStore) buildIndexes(ctx context.Context) {
 					case "package_present_images":
 						edge(p, im)
 					default:
-						if r.Licenses[lic].Status == "noncompliant" {
+						if r.Licenses.At(lic).Status == statusID("noncompliant") {
 							if d.name == "image_noncompliant_packages" {
 								edge(im, p)
 							} else {
@@ -97,8 +130,8 @@ func (r *reportStore) buildIndexes(ctx context.Context) {
 				if f%1024 == 0 {
 					checkContext(ctx)
 				}
-				o, a, v := int(r.Findings[f].Occurrence), int(r.Findings[f].Advisory), int(r.Findings[f].Vulnerability)
-				im, p := int(r.Occurrences[o].Image), int(r.Occurrences[o].Package)
+				o, a, v := int(r.Findings.At(f).Occurrence), int(r.Findings.At(f).Advisory), int(*r.AdvisoryVulnerabilities.At(int(r.Findings.At(f).Advisory)))
+				im, p := int(r.Occurrences.At(o).Image), int(r.Occurrences.At(o).Package)
 				switch d.name {
 				case "image_findings":
 					edge(im, f)

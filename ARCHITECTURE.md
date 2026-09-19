@@ -1,147 +1,187 @@
 # Architecture
 
-The public API is asynchronous full-batch registry-image scanning. OSV-Scanner v2.6.0 remains
-the scanning engine. Python, Cython 3.3.0, and private native ABI 6 ship together;
-older ABIs and synchronous scan aliases are not supported.
+This document describes the library's design contract and the reasons for its
+main implementation choices. It is reference material for agents changing the
+code.
+
+## Scope and workload
+
+The library exposes asynchronous, full-batch container-image scanning. OSV-Scanner
+is the scanning engine; Python and Cython provide the public API; Go owns scanning
+coordination, normalization, storage, and the private native ABI.
+
+The workload has two phases:
+
+1. **Ingestion:** many images are scanned and projected into one report. This is
+   append-heavy and memory-sensitive.
+2. **Immutable access:** the completed report may traverse essentially every
+   record and relationship path. Relationship indexes are therefore retained for
+   predictable keyed traversal. Replacing them with repeated scans would trade
+   final memory for repeated large-table work and could make reverse traversals
+   quadratic.
 
 ## Ownership and lifecycle
 
-Python snapshots image references, credentials, language selections, and license policies
-into immutable JSON bytes when the coroutine executes. One executor job per
-batch runs on the calling loop's default executor. There is no library executor,
-per-image Python job, process-global decoder, or global scan lock.
+Python snapshots request data into immutable JSON bytes when the scan coroutine
+executes. One executor job runs the batch; the library does not create a second
+Python executor, a process-global decoder, or a global scan lock.
 
-Compiled calls link one bundled Go shared library; import checks its ABI version.
-A controller lock protects each operation's cancellation flag and
-published integer handle. Cancellation before publication prevents startup;
-after publication it calls the signal-only native cancel entry point. The owner
-detaches under this lock before releasing the handle. Joins and
-disposal occur outside the lock.
+The native boundary passes integer `runtime/cgo.Handle` values. Go pointers never
+cross the ABI. A controller lock protects cancellation state and handle
+publication. Cancellation signals the Go context; it does not join workers while
+holding the lock. Release joins workers before deleting the operation handle.
 
-The coroutine shields its completion future. On cancellation it
-signals Go and continues shielding until the executor finishes, including through
-repeated cancellation. It discards a completed result and re-raises
-`CancelledError`. Consumers own deadlines through `asyncio.timeout()` or
-`asyncio.wait_for()`, retaining asyncio's exception behavior. A foreign
-thread must use `loop.call_soon_threadsafe(task.cancel)`.
+The coroutine shields completion and continues cleanup after caller cancellation.
+The completed result owns the immutable report through one shared owner. Cython
+views and sequences retain that owner; child views do not have independent native
+handles or caches. Releasing the final owner releases the Go result exactly once.
 
-Native create/start/wait/cancel/finish/release entry points use integer
-`runtime/cgo.Handle` identifiers; no Go pointer crosses the ABI. Only cancellation
-can overlap the owner's calls. Go cancellation signals a context and never joins.
-Release joins workers before deleting the handle.
+## Admission and projection
 
-## Admission and reporting
+One coordinator owns the builder and all batch interners. At most `workers`
+goroutines are active. Running plus completed-but-unmerged images is bounded by
+that worker window. Results merge in input order, so publication is deterministic.
 
-Each operation starts at most `workers` fixed goroutines. One coordinator owns
-the builder and all interners. Running plus completed-but-unmerged images never
-exceeds `workers`. The coordinator projects each received result immediately,
-drops the upstream graph, and merges compact facts in input order before admitting
-another image. The next expected image projects directly into the batch. A slow
-first image stops admission when its
-window fills. Channel sends and receives unblock on cancellation.
+Workers project scanner output into library-owned facts immediately. The upstream
+scanner graph is then eligible for collection. The report never retains scanner
+protobuf catalogs, parsed database records, plugin configuration, credentials, or
+worker state.
 
-Each worker owns its client factories for the operation. Every image gets fresh
-plugin configuration. Scanner's gRPC client map has its own upstream mutex;
-HTTP clients and transports support concurrent calls. The stateless SCALIBR
-logger and discard slog handler are installed once. Never install Scanner's
-mutable logger wrapper.
+Ordinary scan failures occupy an image slot and become failed image records.
+Consumer cancellation stops admission and signals the operation context. The
+library does not impose per-image deadlines; callers own deadlines with
+`asyncio.timeout()` or `asyncio.wait_for()`.
 
-Ordinary failures occupy failed image slots. The library creates no deadlines
-or per-image timers. Consumer cancellation stops admission and signals the
-operation context. Cooperative cleanup can exceed a caller's asyncio deadline.
+## Store model
 
-The batch normalizes packages, advisories, contexts, assessments, license facts,
-and fixes into shared tables. Alias union/find remains global to the batch.
-Comparable package keys and collision-safe structural equality preserve distinct
-facts. Advisory group lookup and installed-version parsing are package-local.
-No parsed-advisory cache or persistent package index is maintained.
+The frozen store is schema-specific, not a generic graph. Direct N:1 relationships
+are compact integer columns. Multi-valued relationships use offset/member indexes.
+This avoids per-edge objects and keeps traversal representation predictable.
 
-## Native results and publication
+The principal tables are:
 
-Go owns the immutable normalized store. Occurrences and findings use compact
-uint32 structs; relationship offsets and members are uint32 arrays. The builder
-checks representational overflow. It retains existing collision-safe interning,
-including internal JSON hashes, but retains no upstream scanner graph.
+- images;
+- normalized packages, contexts, licenses, assessments, fixes, and advisories;
+- vulnerability groups formed by batch-wide alias union/find;
+- occurrence rows linking image, package, context, and license;
+- finding rows linking occurrence, advisory, fix, and assessment;
+- an advisory-to-vulnerability array.
 
-Finish transfers the store once to a separate result handle and clears operation
-ownership, including for empty batches. Releasing the operation joins workers;
-the completed result contains no worker, request, or credential state.
+Finding vulnerability identity is derived through the advisory-to-vulnerability
+array. It is not duplicated in every finding row.
 
-Cython views and sequences hold one shared owner, whose destruction releases the
-result handle exactly once. There are no per-child handles or view caches.
-Identity consists of that owner and the native record location. Slices return
-tuples; collection order is deterministic. Constructors, pickling, and explicit
-close are unavailable. Properties copy scalars on every access.
+All row IDs are checked against `uint32` limits. Rows are immutable after
+finalization. The public ABI translates IDs into views and copies scalar values
+on access.
 
-The private ABI dispatches explicitly by record and property identifiers, without
-reflection. Strings are copied into caller-owned length-delimited buffers.
-An undersized buffer reports the required size for retry. Unicode, embedded NULs,
-and optional values survive unchanged; no persistent Go heap pointers escape.
-Cython releases the GIL around operation creation, waiting, finishing, release,
-and long-string copies. Tiny immutable reads do not depend on the GIL for safety.
+## Slab storage and peak-memory invariants
 
-CMake compiles the extension and Go shared library together, with package-relative
-runtime linking on Linux and macOS. Wheels are interpreter-specific (3.13, 3.14,
-3.14t); sources, Cython declarations, and stubs ship in distributions. There is no
-dynamic loader, MessagePack result transport, Python decoder, or alternate backend.
+Large retained tables use fixed-size slabs. Appending allocates a new bounded slab
+when the previous slab fills; it never reallocates and copies the entire table.
+Row addresses remain stable while the table grows. This applies to normalized
+tables, occurrences, findings, string/payload arrays, and relationship arrays.
 
-## Coverage
+Index construction uses count, prefix-sum, fill, sort, and compaction. Membership
+arrays are compacted in place inside segmented storage. Finalization truncates
+unused slabs instead of cloning the live prefix into a second full allocation.
+At most one partially used slab remains for a compacted membership array.
 
-`LanguageSelection` is a Flag with immutable plugin mapping. `None` preserves
-the five existing artifact defaults. `NONE` disables those language plugins
-while retaining OS extraction, annotations, and vulnerability matching. Family
-unions include manifests and lockfiles. Base-image enrichment is always disabled;
-default plugins remain enabled and transitive resolution remains disabled.
+The finalization order is:
 
-## Dependency patches
+1. resolve alias groups and assign vulnerability IDs;
+2. build the advisory-to-vulnerability array;
+3. clear builder-only maps, collision chains, and scratch state;
+4. transfer the report tables into the result;
+5. build frozen relationship indexes from the transferred tables.
 
-Builds copy the Go module into the build directory, run `go mod vendor`, and
-apply the ordered unified diffs in `go/patches` with `git apply --check` followed
-by `git apply`. The final command is `go build -mod=vendor`. Module versions and
-`go.sum` pin the inputs; patch context must match or the build fails. Global
-module caches are never edited. The `.patch` files ship in source distributions.
-Patches add:
+The ordering prevents ingestion maps from remaining live while index memory is
+being allocated. It does not promise immediate RSS reduction or force a garbage
+collection.
 
-- A caller-context prepared-image entry point in Scanner.
-- An indexed package-to-findings report join.
-- Metadata-only protobuf conversion.
-- Context-aware SCALIBR image preparation.
+## Interning and compact payloads
 
-Upstream equivalents should replace these patches when dependencies
-advance. Every dependency update requires re-evaluating globals, clients,
-extractors, and cancellation propagation.
+Interning uses typed comparable keys for fixed records. Variable-length payloads
+use compact string IDs and spans into shared word arrays. Fingerprints select a
+collision chain; complete typed equality checks preserve correctness on collision.
+No JSON serialization, reflection-based equality, SHA-256 allocation path, or
+per-hash slice of candidate IDs is required.
+
+Repeated strings are stored once where practical. Optional strings use zero as an
+absent ID. Optional booleans use a validity/value tag. Status values use compact
+enums. Lists use `(start,count)` spans; nil and empty spans remain distinct.
+Severities and references are stored as packed string-ID sequences.
+
+Scanner projection structs may remain convenient pointer/slice-bearing values
+while transient. Normalized tables retained by the completed store use compact
+fields. Small per-image metadata and diagnostics remain attached to image records
+because they are independently exposed by the public API.
+
+## Frozen relationship indexes
+
+The store materializes all declared relationship indexes because immutable access
+may traverse every path. Indexes contain only uint32 offsets and members;
+contiguous relationships retain offsets without a member allocation.
+
+The index set includes image, occurrence, package, advisory, vulnerability, and
+finding paths. Reverse indexes intentionally remain available for package,
+advisory, and vulnerability traversals. They must not be removed solely because
+some individual reads are infrequent. Index reduction would require evidence that
+the actual workload is sparse enough to justify repeated scans or a new iterator
+contract.
+
+## Native ABI
+
+The private ABI dispatches by numeric record and property identifiers. It uses no
+reflection. String reads are length-delimited copies into caller-owned buffers;
+undersized buffers report the required size for retry. Embedded NULs, Unicode, and
+absent values remain distinguishable.
+
+The ABI version is checked at import. No persistent Go heap pointer escapes to
+Python. Cython releases the GIL around native create, wait, finish, release, and
+long-string operations.
+
+## Concurrency and Cython rules
+
+Each operation owns its workers, clients, cancellation state, and report builder.
+Published reports and all views are immutable. Shared access requires no lazy
+cache or mutable view state. Free-threaded builds must remain free-threaded; a
+global lock or GIL fallback is not part of the design.
+
+Cython uses typed loops and local state for iteration, slicing, `count`, and
+`index`. Slices return tuples. Constructors, pickling, and explicit close are
+unavailable. A view's identity is the shared owner plus native record location.
+
+## Build and dependency boundaries
+
+CMake builds the Cython extension and one bundled Go shared library together.
+Go modules are copied into a build directory, vendored, and patched there; the
+source checkout and global module caches are never modified. Package-relative
+runtime linking keeps the bundled library relocatable on Linux and macOS.
+
+Supported interpreters are CPython 3.13, CPython 3.14, and free-threaded CPython
+3.14t. No alternate backend, dynamic result decoder, MessagePack transport, or
+synchronous scan alias exists.
+
+## Required invariants for changes
+
+Changes must preserve:
+
+- stable row IDs and checked `uint32` overflow behavior;
+- no full-size backing-array replacement during ingestion;
+- no full-size membership clone during index finalization;
+- release of builder-only state before index allocation;
+- deterministic input-order image publication;
+- no upstream scanner graph retained by a completed report;
+- distinct nil, empty, false, and zero-valued optional semantics;
+- one native owner for each completed report;
+- cancellation cleanup after caller-task cancellation;
+- schema-specific compact relationships instead of generic edge objects.
 
 ## Verification
 
-Supported interpreter targets are CPython 3.13 and 3.14, and free-threaded
-CPython 3.14. Free-threaded tests assert the build flag and
-that imports and concurrency tests leave the GIL disabled. No scan lock or GIL
-fallback may be used to pass them. Subinterpreters and shutdown that prevents
-cleanup are outside the contract.
-
-Tests force lifecycle races with barriers and events, verify ordered admission,
-cleanup, reporting semantics, and concurrent
-publication/readers. Installed wheels and source distributions are exercised.
-Go race detection and a focused race-enabled native cancellation check complement
-the unit tests. Expensive public-registry integration runs are manual CI jobs.
-Performance experiments and broad upstream extractor audits are investigations,
-not regression tests to rerun after subsequent implementation changes. Use
-focused tests for the affected behavior.
-
-The local test launcher (`python -m tests`) starts a controlled TLS advisory
-service before pytest starts. This configures proxy and certificate settings
-before the Go runtime snapshots its environment. Registry fixtures and advisory
-responses exercise the compiled binding; tests never synthesize a Python result
-store or replace native calls.
-
-The cutover experiment in ignored `explore_toolkit/experiments/cython_cutover/`
-preserves the baseline and raw measurements. Five fresh untraced processes per
-shape/backend plus separate allocation passes show 49.3% lower live managed
-bytes for mostly-unique records, 48.3% lower million-finding handoff peak RSS,
-and 79.3% / 25.0% lower handoff-plus-traversal time on the two larger cases.
-These are dedicated experiment gates, not timing-sensitive regression tests.
-Repeated uncached scalar reads cost more; consumers should retain reused scalars.
-Rollback is a release revert, not a second backend.
+Focused Go tests cover ordered admission, cancellation, alias grouping, compact
+payload round trips, hash-collision equality, slab growth, index compaction, and
+all materialized relationships. Run:
 
 ```bash
 uv sync --group dev --group local
@@ -157,85 +197,5 @@ uv run --no-sync mypy src/osvpy tests explore_toolkit
 uv build
 ```
 
-Caller-owned input mutation while snapshotting,
-sharing one asyncio task between loops, and subinterpreters are unsupported.
-Independent operations have independent worker budgets; callers must budget
-aggregate memory and concurrency.
-
-## Cython practice review
-
-The binding follows Cython's [early binding guidance](https://cython.readthedocs.io/en/latest/src/userguide/early_binding_for_speed.html):
-native access and view construction use typed `cdef` functions and extension
-fields. Iteration, slicing, `count`, and `index` use `Py_ssize_t` loops and direct
-internal reads. Python index conversion and slice normalization remain at the
-boundary, including negative indices and arbitrarily large Python integers.
-The Python-callable native scan entry rejects `None` for typed arguments before
-dereferencing extension fields.
-
-Following the [Cython optimization workflow](https://cython.readthedocs.io/en/latest/src/quickstart/cythonize.html),
-generate annotated Cython HTML with
-`uv run --no-project --with Cython==3.3.0 python -m cython -3 -a -I src -o /tmp/osvpy-native.c src/osvpy/_native.pyx`.
-Inspect `/tmp/osvpy-native.html` for Python interaction before adding
-type declarations or disabling checks. Bounds and exception checks remain
-enabled; object-producing operations necessarily use Python's runtime. The
-small constructor helper retains Cython's `tp_new` initialization and reuses an
-immutable argument tuple; it does not allocate uninitialized extension objects.
-
-The [parallelization tutorial](https://cython.readthedocs.io/en/latest/src/tutorial/parallelization.html)
-applies to native computational loops that can run without Python interaction.
-This binding boxes heterogeneous records into Python objects; it has no suitable
-OpenMP kernel. Batch execution uses Python executor threads and Go workers.
-Blocking waits, operation cleanup, and substantial native work release the GIL.
-
-The [buffer guide](https://cython.readthedocs.io/en/latest/src/userguide/buffer.html)
-describes typed access to buffer-exporting data, with memoryviews preferred for
-new numerical code. Results here expose no persistent Go pointers or Python
-buffer interface. Strings copy into call-local, length-delimited C buffers,
-with required-size retry and `finally` cleanup for larger allocations. Memoryviews
-would not improve this ownership boundary. Unicode, embedded NULs, and absent
-values retain their distinct meanings.
-
-The [free-threading suggestions](https://cython.readthedocs.io/en/latest/src/userguide/freethreading.html#opinionated-suggestions)
-favor independent work and minimal shared mutation. Each operation owns its
-state; published stores, views, and sequences are immutable, with no lazy caches.
-Every traversal uses local loop state and temporary buffers. A Python lock
-protects cancellation publication and detachment, including calls that release
-the GIL. `freethreading_compatible=True` declares this design; installed-wheel
-concurrency tests also verify that execution leaves the GIL disabled. Readers
-should create separate iterators when traversing a shared sequence concurrently.
-
-The build uses the [CMake/scikit-build pattern](https://cython.readthedocs.io/en/latest/src/userguide/compilation_scikit_build.html):
-the selected Python interpreter runs Cython, a custom command tracks `.pyx` and
-`.pxd` inputs, `Python_add_library(... MODULE WITH_SOABI ...)` builds the extension,
-and installation places it beside its package-relative Go library. Cython is
-pinned to 3.3.0 in isolated build requirements. Wheels carry interpreter-specific
-tags, including the free-threaded ABI. Annotation generation uses Cython directly,
-and race builds use `GOFLAGS=-race uv build --wheel` without custom CMake switches.
-
-Release builds use CMake's compiler optimization defaults, with
-[link-time optimization](https://cmake.org/cmake/help/latest/module/CheckIPOSupported.html)
-and hidden symbols on the Cython extension. The build checks that the compiler
-supports LTO. [Scikit-build strips installed extension binaries](https://scikit-build-core.readthedocs.io/en/latest/configuration/index.html#minimum-version-defaults);
-the Go linker uses [`-s`, which also implies `-w`](https://pkg.go.dev/cmd/link),
-to omit symbol and debug tables. Go retains its normal optimizer and portable CPU
-baseline. This balances runtime speed and size without architecture-specific or
-unsafe optimization flags. Dependency patching stays isolated in the build tree;
-macOS install-name adjustment and signing keep the bundled library relocatable.
-
-Build simplification verification (Linux, 2026-09-18): the wheel built from the
-source distribution passed all 35 local tests on CPython 3.13 with the debug
-allocator; the free-threaded 3.14 wheel also passed all 35 with the GIL disabled.
-The `GOFLAGS=-race` wheel recorded race instrumentation in Go build metadata and
-passed all 10 native cancellation tests. ELF inspection confirmed package-relative
-loading and the exported Python module initializer. The extension changed from
-204,200 to 204,192 bytes; the Go library remained 50,773,648 bytes, so total binary
-size is essentially unchanged. These checks establish build correctness, not a
-measured runtime speedup. macOS remains covered by CI, not this local verification.
-
-Review verification (Linux, 2026-09-18): rebuilt and installed CPython 3.13 and
-free-threaded 3.14 wheels; each passed all 35 local behavioral tests, with three
-public-registry integration tests deselected. The 3.13 run used Python's debug
-allocator; the 3.14t run asserted that the GIL stayed disabled. Generated HTML
-was inspected for the changed traversal paths. Ruff, mypy, and whitespace checks
-passed. This focused review did not repeat the earlier performance experiment or
-macOS validation.
+Performance experiments are diagnostics, not timing-sensitive regression tests.
+Measure peak RSS when changing slab size, payload packing, or index construction.

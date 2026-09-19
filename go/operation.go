@@ -61,7 +61,6 @@ func (op *operation) run(scan scanFunc) {
 	checkContext(op.ctx)
 	builder := newBuilder()
 	builder.ctx = op.ctx
-	builder.report.Images = make([]reportImage, 0, len(op.req.Inputs))
 	type result struct {
 		index      int
 		req        request
