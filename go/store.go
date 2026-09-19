@@ -89,12 +89,9 @@ func (b *batchBuilder) union(ids []string) {
 	}
 }
 func projectImage(cancelContext context.Context, req request, resp response, sink projectionSink) reportImage {
-	im := reportImage{Requested: req.Image, Metadata: resp.Metadata, Status: "complete"}
+	im := reportImage{Requested: req.Image, Status: "complete"}
 	if resp.Error != nil {
 		im.Status = "failed"
-		if im.Metadata.ScannerVersion == "" {
-			im.Metadata = scanMetadata{ScannerVersion: scannerVersion, AllPackages: req.AllPackages, Languages: req.Languages}
-		}
 		im.Diagnostics = append(im.Diagnostics, *resp.Error)
 		return im
 	}

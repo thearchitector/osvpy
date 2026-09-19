@@ -1,5 +1,6 @@
 """Keep untraced timings, Python retention, and process RSS separate."""
 
+import ctypes
 import gc
 import resource
 import sys
@@ -73,3 +74,29 @@ def current_rss_bytes() -> int | None:
         if line.startswith("VmRSS:"):
             return int(line.split()[1]) * 1024
     return None
+
+
+def native_result_count(
+    library_path: Path | None = None, *, collect: bool = True
+) -> int:
+    """Observe live native report handles for local lifetime investigations.
+
+    This is an implementation diagnostic, not an allocation/lifetime guarantee.
+    Call before and after any chosen workload; no expected count is imposed.
+    """
+    if collect:
+        gc.collect()
+    if library_path is None:
+        from osvpy import _native
+
+        library_path = Path(_native.__file__)
+    library = ctypes.CDLL(str(library_path))
+    try:
+        count = library.osv_result_count
+    except AttributeError as error:
+        raise RuntimeError(
+            "Native report-count diagnostics require a compatible development build"
+        ) from error
+    count.argtypes = []
+    count.restype = ctypes.c_uint64
+    return int(count())

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"slices"
 	"sync"
-	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
@@ -22,8 +21,6 @@ import (
 	"github.com/google/osv-scanner/v2/pkg/models"
 	"github.com/google/osv-scanner/v2/pkg/osvscanner"
 )
-
-const scannerVersion = "2.6.0"
 
 // The bundled Go runtime owns logging configuration for its lifetime. Do not
 // install osvscanner.SetLogger: its wrapper mutates error state during scans.
@@ -45,42 +42,21 @@ type request struct {
 	AllowedLicenses []string      `json:"allowed_licenses"`
 }
 
-type scanMetadata struct {
-	Languages       []string `json:"languages,omitempty"`
-	ScannerVersion  string   `json:"scanner_version"`
-	AllPackages     bool     `json:"all_packages"`
-	ImageDigest     string   `json:"image_digest,omitempty"`
-	ImagePlatform   string   `json:"image_platform,omitempty"`
-	DurationSeconds float64  `json:"duration_seconds"`
-	NoPackages      bool     `json:"no_packages"`
-}
-
 type nativeError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
 type response struct {
-	Result   models.VulnerabilityResults
-	Metadata scanMetadata
-	Error    *nativeError
+	Result models.VulnerabilityResults
+	Error  *nativeError
 }
 
 func failure(code, message string) response {
 	return response{Error: &nativeError{Code: code, Message: message}}
 }
 
-func execute(req request) response {
-	return executeWithConfig(req, nil)
-}
-
-// Per-call dependencies allow hermetic network tests without replacing global
-// HTTP clients or loggers while other scans are running.
-func executeWithConfig(req request, config *scalibrconfig.PluginConfig) response {
-	return executeContext(context.Background(), req, config)
-}
-
-func executeContext(ctx context.Context, req request, config *scalibrconfig.PluginConfig) (out response) {
+func executeContext(ctx context.Context, req request, config *scalibrconfig.PluginConfig) response {
 	if req.Languages == nil {
 		req.Languages = defaultLanguages()
 	}
@@ -100,12 +76,6 @@ func executeContext(ctx context.Context, req request, config *scalibrconfig.Plug
 		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 		scalibrlog.SetLogger(discardLogger{})
 	})
-	started := time.Now()
-	metadata := scanMetadata{ScannerVersion: scannerVersion, AllPackages: req.AllPackages, Languages: req.Languages}
-	defer func() {
-		metadata.DurationSeconds = time.Since(started).Seconds()
-		out.Metadata = metadata
-	}()
 	// Explicit auth only. DefaultKeychain can execute Docker credential helpers.
 	auth := authn.Anonymous
 	if req.Auth != nil {
@@ -126,12 +96,6 @@ func executeContext(ctx context.Context, req request, config *scalibrconfig.Plug
 	if imageConfig.OS != "linux" {
 		return failure("unsupported_image", "Only Linux container images are supported")
 	}
-	digest, err := img.Digest()
-	if err != nil {
-		return acquisitionError(err)
-	}
-	metadata.ImageDigest = digest.String()
-	metadata.ImagePlatform = imageConfig.OS + "/" + imageConfig.Architecture
 	prepared, err := scalibrimage.FromV1ImageContext(ctx, img, scalibrimage.DefaultConfig())
 	if err != nil {
 		return failure("scan_error", err.Error())
@@ -157,7 +121,6 @@ func executeContext(ctx context.Context, req request, config *scalibrconfig.Plug
 	if err != nil && !errors.Is(err, osvscanner.ErrVulnerabilitiesFound) && !errors.Is(err, osvscanner.ErrNoPackagesFound) {
 		return failure("scan_error", err.Error())
 	}
-	metadata.NoPackages = errors.Is(err, osvscanner.ErrNoPackagesFound)
 	if req.AllowedLicenses != nil {
 		for i := range result.Results {
 			for j := range result.Results[i].Packages {

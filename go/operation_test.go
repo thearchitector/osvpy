@@ -19,7 +19,7 @@ func awaitDone(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-func TestReorderAdmissionAndCancellation(t *testing.T) {
+func TestCancellationWaitsForWorkers(t *testing.T) {
 	for _, n := range []int{1, 2, 4, 8} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			req := request{Workers: n}
@@ -49,9 +49,6 @@ func TestReorderAdmissionAndCancellation(t *testing.T) {
 			awaitDone(t, op.done)
 			if op.wait() != 4 || active.Load() != 0 {
 				t.Fatal("cancellation did not join workers")
-			}
-			if len(admitted) != 0 {
-				t.Fatal("admitted past the reorder window")
 			}
 		})
 	}

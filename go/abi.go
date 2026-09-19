@@ -5,7 +5,7 @@ package main
 #include <stddef.h>
 typedef struct {
   uint32_t tag, kind, row, sub;
-  double number;
+  uint32_t number;
   size_t size;
 } osv_value;
 */
@@ -16,8 +16,6 @@ import (
 	"sync/atomic"
 	"unsafe"
 )
-
-const abiVersion = 6
 
 // Count roots held across the Python boundary, not Go heap allocations. This
 // makes lifetime checks independent of Go GC and the runtime's heap reuse.
@@ -31,9 +29,6 @@ func guard(status *C.int) {
 		*status = C.int(panicStatus(p))
 	}
 }
-
-//export osv_abi_version
-func osv_abi_version() C.int { return abiVersion }
 
 //export osv_batch_create
 func osv_batch_create(input *C.char, size C.size_t, out *C.uintptr_t) (status C.int) {
@@ -107,7 +102,7 @@ func osv_result_release(handle C.uintptr_t) (status C.int) {
 
 type nativeValue struct {
 	tag, kind, row, sub uint32
-	number              float64
+	number              uint32
 	text                string
 }
 
@@ -121,7 +116,7 @@ func boolValue(b bool) nativeValue {
 func refValue(kind, row, sub uint32) nativeValue {
 	return nativeValue{tag: 4, kind: kind, row: row, sub: sub}
 }
-func seqValue(n int) nativeValue { return nativeValue{tag: 5, number: float64(checked(n))} }
+func seqValue(n int) nativeValue { return nativeValue{tag: 5, number: checked(n)} }
 
 func (r *reportStore) optionalStringValue(id uint32) nativeValue {
 	if id == 0 {
@@ -228,8 +223,6 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 			return textValue(*v.OS)
 		case 3:
 			return textValue(v.Status)
-		case 4:
-			return refValue(12, row, 0)
 		case 5:
 			if index < 0 {
 				return seqValue(len(v.Diagnostics))
@@ -396,30 +389,6 @@ func (r *reportStore) value(kind, row, sub, field uint32, index int64) nativeVal
 			return r.stringListValue(v.Urgencies, index)
 
 		}
-	case 12:
-		v := r.Images.At(int(row)).Metadata
-		switch field {
-		case 1:
-			if index < 0 {
-				return seqValue(len(v.Languages))
-			}
-			if uint64(index) >= uint64(len(v.Languages)) {
-				panic("invalid index")
-			}
-			return textValue(v.Languages[index])
-		case 2:
-			return textValue(v.ScannerVersion)
-		case 3:
-			return boolValue(v.AllPackages)
-		case 4:
-			return textValue(v.ImageDigest)
-		case 5:
-			return textValue(v.ImagePlatform)
-		case 6:
-			return nativeValue{tag: 3, number: v.DurationSeconds}
-		case 7:
-			return boolValue(v.NoPackages)
-		}
 	case 13:
 		v := r.Images.At(int(row)).Diagnostics[sub]
 		switch field {
@@ -460,7 +429,7 @@ func osv_result_get(handle C.uintptr_t, kind, row, sub, field C.uint32_t, index 
 	*out = C.osv_value{}
 	v := cgo.Handle(handle).Value().(*reportStore).value(uint32(kind), uint32(row), uint32(sub), uint32(field), int64(index))
 	out.tag, out.kind, out.row, out.sub = C.uint32_t(v.tag), C.uint32_t(v.kind), C.uint32_t(v.row), C.uint32_t(v.sub)
-	out.number, out.size = C.double(v.number), C.size_t(len(v.text))
+	out.number, out.size = C.uint32_t(v.number), C.size_t(len(v.text))
 	if len(v.text) > 0 && uint64(capacity) >= uint64(len(v.text)) {
 		copy(unsafe.Slice((*byte)(unsafe.Pointer(buffer)), len(v.text)), v.text)
 	}

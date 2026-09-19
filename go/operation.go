@@ -29,8 +29,6 @@ func panicStatus(value any) int {
 	switch value {
 	case "report_overflow":
 		return 2
-	case "report_allocation":
-		return 3
 	case context.Canceled:
 		return 4
 	default:

@@ -113,7 +113,7 @@ Severities and references are stored as packed string-ID sequences.
 
 Scanner projection structs may remain convenient pointer/slice-bearing values
 while transient. Normalized tables retained by the completed store use compact
-fields. Small per-image metadata and diagnostics remain attached to image records
+fields. Per-image diagnostics remain attached to image records
 because they are independently exposed by the public API.
 
 ## Frozen relationship indexes
@@ -136,9 +136,10 @@ reflection. String reads are length-delimited copies into caller-owned buffers;
 undersized buffers report the required size for retry. Embedded NULs, Unicode, and
 absent values remain distinguishable.
 
-The ABI version is checked at import. No persistent Go heap pointer escapes to
-Python. Cython releases the GIL around native create, wait, finish, release, and
-long-string operations.
+The Go library and Cython extension are built and distributed together as part of
+the Python package. No persistent Go heap pointer escapes to Python. Cython
+releases the GIL around native create, wait, finish, release, and long-string
+operations.
 
 ## Concurrency and Cython rules
 
@@ -179,9 +180,12 @@ Changes must preserve:
 
 ## Verification
 
-Focused Go tests cover ordered admission, cancellation, alias grouping, compact
-payload round trips, hash-collision equality, slab growth, index compaction, and
-all materialized relationships. Run:
+Go unit tests cover input-order results, cancellation, alias grouping, report
+field values, and relationship queries. Python unit tests cover authentication
+value behavior, language selection, and the scan coroutine with a controlled
+backend. They do not run the scanner, a registry, or external services. Layout,
+allocation, transport, and lifetime investigations use `explore_toolkit` probes,
+without regression assertions or fixed performance thresholds. Run:
 
 ```bash
 uv sync --group dev --group local
@@ -191,7 +195,7 @@ git apply --check patches/*.patch
 git apply patches/*.patch
 go test -mod=vendor -race ./...
 cd ..
-uv run --no-sync python -m tests -m 'not integration'
+uv run --no-sync python -m pytest
 uv run --no-sync ruff check src/osvpy tests explore_toolkit
 uv run --no-sync mypy src/osvpy tests explore_toolkit
 uv build

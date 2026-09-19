@@ -73,7 +73,7 @@ batch = await osvpy.scan(
     platform="linux/arm64",
     all_packages=True,
 )
-print(batch.images[0].metadata.image_digest)
+print(batch.images[0].status)
 ```
 
 Registry references accept tags or digests. Supply credentials through
@@ -139,17 +139,17 @@ source directories, lockfiles, and SBOM files are not accepted as scan inputs.
 
 ## Read results
 
-Access fields directly, such as `package.name` or `image.metadata.image_digest`.
+Access fields directly, such as `package.name` or `image.status`.
 
-| Object            | Data and relationships                                                                                                                                                       |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `batch`           | `images`, `packages`, `vulnerabilities`, `advisory_sources`, `findings`, `complete`, `errors`                                                                                |
-| `image`           | `requested`, `os`, `metadata`, `status`, `diagnostics`, `complete`, `packages`, `occurrences`, `vulnerable_packages`, `noncompliant_packages`, `vulnerabilities`, `findings` |
-| `package`         | `name`, `version`, `ecosystem`, `commit`, `os_package_name`, `purl`, `present_images`, `vulnerable_images`, `noncompliant_images`, `affected_images`, `findings`             |
-| `vulnerability`   | `id`, `aliases`, `affected_images`, `findings`                                                                                                                               |
-| `advisory_source` | `id`, `aliases`, `summary`, `severities`, `references`, `modified`, `published`, `withdrawn`, `affected_images`, `findings`                                                  |
-| `occurrence`      | `image`, `package`, `context`, `license_assessment`, `findings`                                                                                                              |
-| `finding`         | `occurrence`, `vulnerability`, `advisory_source`, `assessment`, `fix_evidence`                                                                                               |
+| Object            | Data and relationships                                                                                                                                           |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `batch`           | `images`, `packages`, `vulnerabilities`, `advisory_sources`, `findings`, `complete`, `errors`                                                                    |
+| `image`           | `requested`, `os`, `status`, `diagnostics`, `complete`, `packages`, `occurrences`, `vulnerable_packages`, `noncompliant_packages`, `vulnerabilities`, `findings` |
+| `package`         | `name`, `version`, `ecosystem`, `commit`, `os_package_name`, `purl`, `present_images`, `vulnerable_images`, `noncompliant_images`, `affected_images`, `findings` |
+| `vulnerability`   | `id`, `aliases`, `affected_images`, `findings`                                                                                                                   |
+| `advisory_source` | `id`, `aliases`, `summary`, `severities`, `references`, `modified`, `published`, `withdrawn`, `affected_images`, `findings`                                      |
+| `occurrence`      | `image`, `package`, `context`, `license_assessment`, `findings`                                                                                                  |
+| `finding`         | `occurrence`, `vulnerability`, `advisory_source`, `assessment`, `fix_evidence`                                                                                   |
 
 An occurrence describes a package in a particular image and location. Its
 `context` includes the path, source type, layer digest, and dependency groups.

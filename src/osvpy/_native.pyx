@@ -22,13 +22,10 @@ cdef extern from *:
     """
     object osv_new_view(object cls, object args)
 
-if osv_abi_version() != 6:
-    raise ImportError("osvpy native ABI mismatch; rebuild or reinstall osvpy")
-
 cdef int check(int status) except -1:
     if status:
         code = {1: "internal_error", 2: "report_overflow",
-                3: "allocation_failure", 4: "cancelled"}.get(status, "internal_error")
+                4: "cancelled"}.get(status, "internal_error")
         raise NativeLibraryError(f"Native batch failed: {code}", code=code)
     return 0
 
@@ -166,8 +163,6 @@ cdef object view(_Owner owner, uint32_t kind, uint32_t row, uint32_t sub):
         result = osv_new_view(ReportLicense, construction_args)
     elif kind == 11:
         result = osv_new_view(ReportFix, construction_args)
-    elif kind == 12:
-        result = osv_new_view(ScanMetadata, construction_args)
     elif kind == 13:
         result = osv_new_view(NativeError, construction_args)
     elif kind == 14:
@@ -209,8 +204,6 @@ cdef object read(_Owner owner, uint32_t kind, uint32_t row, uint32_t sub,
         return PyUnicode_DecodeUTF8(local, value.size, "strict")
     if value.tag == 2:
         return bool(value.number)
-    if value.tag == 3:
-        return value.number
     if value.tag == 4:
         return view(owner, value.kind, value.row, value.sub)
     if value.tag == 5:
@@ -268,10 +261,6 @@ cdef class ImageResult(_View):
     @property
     def status(self):
         return read(self.owner, self.kind, self.row, self.sub, 3)
-
-    @property
-    def metadata(self):
-        return read(self.owner, self.kind, self.row, self.sub, 4)
 
     @property
     def diagnostics(self):
@@ -517,35 +506,6 @@ cdef class ReportFix(_View):
     @property
     def urgencies(self):
         return read(self.owner, self.kind, self.row, self.sub, 4)
-
-cdef class ScanMetadata(_View):
-    @property
-    def languages(self):
-        return read(self.owner, self.kind, self.row, self.sub, 1)
-
-    @property
-    def scanner_version(self):
-        return read(self.owner, self.kind, self.row, self.sub, 2)
-
-    @property
-    def all_packages(self):
-        return read(self.owner, self.kind, self.row, self.sub, 3)
-
-    @property
-    def image_digest(self):
-        return read(self.owner, self.kind, self.row, self.sub, 4)
-
-    @property
-    def image_platform(self):
-        return read(self.owner, self.kind, self.row, self.sub, 5)
-
-    @property
-    def duration_seconds(self):
-        return read(self.owner, self.kind, self.row, self.sub, 6)
-
-    @property
-    def no_packages(self):
-        return read(self.owner, self.kind, self.row, self.sub, 7)
 
 cdef class NativeError(_View):
     @property

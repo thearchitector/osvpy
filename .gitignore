@@ -10,8 +10,6 @@ __pycache__
 dist/
 wheelhouse/
 src/osvpy/_lib/
-
-/experiments/
 /go/vendor/
 
 *.md

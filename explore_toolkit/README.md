@@ -10,19 +10,25 @@ prototypes, patches, logs, measurements, and reports under
 `explore_toolkit/experiments/<topic>/`. The toolkit's `.gitignore` ignores new
 files by default and explicitly allows maintained components. When promoting a
 new reusable component, add it to that allowlist and document it here. Do not
-force-add an experiment or its outputs. Regression tests belong in `tests/` or
-`go/` and assert observable behavior, not allocation strategies or internal calls.
+force-add an experiment or its outputs. `tests/` and `go/` contain isolated unit
+behavior tests. Keep implementation probes, historical regression scenarios,
+live scanner runs, and local-registry integration investigations in this toolkit.
+Do not turn measurements or implementation choices into test assertions.
 
 ## Contents
 
 | Component | Purpose |
 | --- | --- |
 | `images.py` | `registry_resources()` builds in-memory OCI layers and a two-platform image index from file contents. `serve_registry()` serves them locally with optional credentials, failures, and a request barrier. |
+| `advisories.py` | `advisory_proxy(packages)` serves caller-supplied OSV responses over HTTPS for isolated scanner experiments. Yields proxy/certificate settings without changing the parent environment. |
 | `reports.py` | `upstream_image()` generates coherent package/advisory workloads with configurable overlap, advisory fanout, alias sharing, descriptions, and license violations. The generator supplies upstream inputs to isolated native experiments. |
 | `data/complete_response.json` | Full-information upstream response template used by the report generator; preserves less common advisory and image fields. |
 | `measure.py` | `timed()` collects untraced durations. `retained()` returns the live result and Python allocation measurements. `current_rss_bytes()` and `peak_rss_bytes()` distinguish current RSS from the process lifetime high-water mark. |
 | `processes.py` | `run_fresh()` repeats any JSON-producing command with a timeout and isolated process state. `medians()` summarizes selected numeric fields. Also runnable as a small command-line driver. |
 | `native.py` | `bridge_workspace()` copies the current flat Go module to a temporary workspace, optionally adding probe files. `build_library()` builds a separate shared library, optionally with race instrumentation. Neither installs a library nor replaces shared Python clients/loaders. |
+| `benchmark_memory.py` | Builds report memory probes in an isolated Go workspace, then measures each lifecycle workload in a fresh process. Reports sampled Go heap peaks and per-process maximum RSS. |
+| `data/memory_benchmark_test.go` | Go probes for alias finalization and report ingestion, finalization, and streaming serialization. Injected into the temporary workspace; not part of production Go tests. |
+| `data/storage_probe_test.go` | `observeIndexPlan()`, `observeIndexes()`, and `observeRowSizes()` return planning, slab, and layout observations without assertions or thresholds. |
 
 The tools retain the useful setup and measurement methods from earlier serializer,
 batch, memory, and concurrency experiments. Obsolete codecs, generated prototype
@@ -93,6 +99,67 @@ and fixture definitions, compares the actual compiled Cython properties against
 that baseline, and records five fresh-process timings separately from allocation
 passes. Historical prototype measurements remain in `experiments/cython_probe/`;
 its binding is retired.
+
+## Report lifecycle memory benchmark
+
+```bash
+uv run python -m explore_toolkit.benchmark_memory --repeat 3
+```
+
+The runner uses `native.bridge_workspace()` to copy the Go module and its tests,
+injects `data/memory_benchmark_test.go`, and compiles a temporary test binary.
+Each workload runs in a fresh process. Linux/macOS `wait4` supplies that child's
+maximum RSS, excluding compilation and previous runs. Use `--source-dir` to
+measure another compatible Go checkout with the same injected probes.
+
+The lifecycle probe ingests ten images with 2,000 package occurrences each,
+finalizes all tables and 16 indexes, and streams every logical table and
+relationship as JSON to a discard sink. Four findings per occurrence exercise
+relationship deduplication. Separate cases use fully overlapping or entirely
+distinct packages and advisories. The immutable report stays alive throughout
+serialization. The fixture also provides `BenchmarkFinishLargeAliasUniverse`
+for focused finalization measurements using an isolated native experiment.
+
+Heap sampling runs approximately every millisecond and at phase boundaries.
+It reports absolute `HeapAlloc`, including uncollected garbage, and can miss
+short peaks. Sampling adds overhead; durations are diagnostic, not pure
+throughput measurements. A GC runs before each iteration, never between phases.
+The runner uses one iteration per fresh process for peak comparisons.
+
+These synthetic measurements cover report ingestion, finalization, and streaming
+export, excluding image scanning, downloads, vulnerability databases, Python
+objects, and application output buffers. The JSON format is a benchmark fixture,
+not a public export API. Retained result sizes are not construction peaks, and
+reclaimable Go memory does not guarantee an immediate RSS reduction.
+
+Keep captured output and comparisons under ignored
+`explore_toolkit/experiments/<topic>/`, alongside environment and toolchain details.
+Unit tests in `go/` assert report values and relationships, not index build order,
+slab counts, allocation sizes, or retention strategies.
+
+## Lifetime, cancellation, and scanner investigations
+
+`measure.native_result_count()` reports native handle counts, optionally after
+Python GC, using a compatible development build. Pass `library_path=` to observe
+an isolated bridge library; counts belong to that library, not another loaded
+copy. Sample it around any chosen workload, escaped view, cycle, or retained
+task to investigate ownership without imposing a fixed handle-count guarantee.
+
+Pass `images.RegistryPause(stage="manifest")` or `stage="layer"` as `pause=` to
+`serve_registry()`. Its `entered` event signals a stalled response; `disconnected`
+observes transport closure. Combine it with `asyncio.timeout`, task cancellation,
+or cross-thread calls in an experiment. These transport observations are not
+public API unit-test expectations.
+
+For advisory lookups, `advisory_proxy()` accepts package-name or exact-PURL keys
+mapped to sequences of OSV advisory dictionaries (including `id` and `modified`).
+Pass its yielded values as `HTTPS_PROXY` and `SSL_CERT_FILE`, with
+`NO_PROXY=127.0.0.1,localhost`, to a fresh worker via `processes.run_fresh()`.
+The helper needs `openssl`; the unit suite needs no advisory service or registry.
+Use `images.registry_resources(files)` for caller-chosen package/license inventory
+and `reports.upstream_image()` for projected-report workloads. Keep credentials,
+platform combinations, cancellation modes, and external image lists in the
+experiment, rather than baking fixed regression matrices into the toolkit.
 
 ## Native experiments
 

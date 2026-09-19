@@ -11,31 +11,19 @@ from threading import Thread
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
-SUMMARY = "Résumé\x00" * 1000
-ADVISORY = {
-    "id": "OSVPY-EXAMPLE",
-    "aliases": ["CVE-2026-12345"],
-    "summary": SUMMARY,
-    "modified": "2026-01-01T00:00:00.123456789Z",
-    "severity": [
-        {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
-    ],
-    "references": [{"type": "WEB", "url": "https://example.test/advisory"}],
-    "affected": [
-        {
-            "package": {"name": "example", "ecosystem": "PyPI"},
-            "ranges": [
-                {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.0"}]}
-            ],
-        }
-    ],
-}
+    from collections.abc import Iterator, Mapping, Sequence
 
 
 @contextmanager
-def advisory_proxy() -> "Iterator[tuple[str, str]]":
+def advisory_proxy(
+    packages: "Mapping[str, Sequence[Mapping[str, object]]]",
+) -> "Iterator[tuple[str, str]]":
+    """Serve caller-supplied OSV advisories keyed by package name or exact PURL.
+
+    Yields (HTTPS_PROXY, SSL_CERT_FILE) values for an isolated worker process.
+    Requires openssl; does not change parent environment or native clients.
+    """
+    catalog = {str(a["id"]): dict(a) for records in packages.values() for a in records}
     with TemporaryDirectory(prefix="osvpy-tls-") as directory:
         cert, key = Path(directory) / "cert.pem", Path(directory) / "key.pem"
         subprocess.run(
@@ -91,18 +79,14 @@ def advisory_proxy() -> "Iterator[tuple[str, str]]":
                         "results": [
                             {
                                 "vulns": [
-                                    {
-                                        "id": ADVISORY["id"],
-                                        "modified": ADVISORY["modified"],
-                                    }
+                                    {"id": a["id"], "modified": a["modified"]}
+                                    for a in packages.get(
+                                        q.get("package", {}).get("name")
+                                        or q.get("package", {}).get("purl", ""),
+                                        (),
+                                    )
                                 ]
                             }
-                            if (
-                                q.get("package", {}).get("name") == "example"
-                                or "pkg:pypi/example@"
-                                in q.get("package", {}).get("purl", "")
-                            )
-                            else {}
                             for q in body["queries"]
                         ]
                     })
@@ -110,8 +94,9 @@ def advisory_proxy() -> "Iterator[tuple[str, str]]":
                     self.send_error(404)
 
             def do_GET(self) -> None:
-                if self.path.endswith("/vulns/OSVPY-EXAMPLE"):
-                    self.respond(ADVISORY)
+                identifier = self.path.rsplit("/vulns/", 1)[-1]
+                if "/vulns/" in self.path and identifier in catalog:
+                    self.respond(catalog[identifier])
                 else:
                     self.send_error(404)
 

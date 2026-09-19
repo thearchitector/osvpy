@@ -7,9 +7,8 @@ cdef extern from "libosvpy.h" nogil:
         uint32_t kind
         uint32_t row
         uint32_t sub
-        double number
+        uint32_t number
         size_t size
-    int osv_abi_version()
     int osv_batch_create(char*, size_t, uintptr_t*)
     int osv_batch_start(uintptr_t)
     int osv_batch_wait(uintptr_t)

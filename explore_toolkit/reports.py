@@ -84,6 +84,5 @@ def upstream_image(
     data["result"]["results"][0]["packages"] = records
     digest = "sha256:" + hashlib.sha256(f"image-{image}".encode()).hexdigest()
     data["result"]["image_metadata"]["layer_metadata"][0]["diff_id"] = digest
-    data["metadata"].update(image_digest=digest, duration_seconds=0)
     data["request"] = {"image": f"image-{image}", "all_packages": True}
     return data

@@ -72,7 +72,6 @@ type reportFix struct {
 }
 type reportImage struct {
 	Requested   string        `json:"requested"`
-	Metadata    scanMetadata  `json:"metadata"`
 	OS          *string       `json:"os"`
 	Status      string        `json:"status"`
 	Diagnostics []nativeError `json:"diagnostics,omitempty"`

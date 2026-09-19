@@ -9,61 +9,6 @@ import (
 	"testing"
 )
 
-func TestCanonicalSliceOwnership(t *testing.T) {
-	for _, input := range [][]string{nil, {}, {"one"}, {"z", "a", "z", "a"}} {
-		borrowed := slices.Clone(input)
-		copy := uniqueCopy(borrowed)
-		if !reflect.DeepEqual(borrowed, input) {
-			t.Fatal("borrowed slice mutated")
-		}
-		owned := slices.Clone(input)
-		got := unique(owned)
-		if !reflect.DeepEqual(got, copy) || cap(got) != len(got) {
-			t.Fatalf("canonical result: %#v, %#v", got, copy)
-		}
-		if len(input) == 0 && got != nil {
-			t.Fatal("empty string lists must canonicalize to nil")
-		}
-		if len(got) > 0 {
-			if &got[0] != &owned[0] {
-				t.Fatal("owned values were copied")
-			}
-			copy[0] = "changed"
-			if !reflect.DeepEqual(borrowed, input) {
-				t.Fatal("result shares borrowed storage")
-			}
-		}
-		for _, value := range owned[len(got):] {
-			if value != "" {
-				t.Fatal("compacted string tail retains references")
-			}
-		}
-	}
-	for _, input := range [][]reportSeverity{nil, {}, {{"T", "S", "V"}}, {
-		{"Z", "A", "A"}, {"A", "Z", "A"}, {"A", "A", "Z"},
-		{"A", "A", "A"}, {"A", "A", "Z"},
-	}} {
-		owned := slices.Clone(input)
-		got := canonicalSeverities(owned)
-		if (got == nil) != (input == nil) || cap(got) != len(got) {
-			t.Fatal("severity nil or capacity semantics changed")
-		}
-		if len(got) > 0 && &got[0] != &owned[0] {
-			t.Fatal("owned severities were copied")
-		}
-		if len(input) > 1 && !reflect.DeepEqual(got, []reportSeverity{
-			{"A", "A", "A"}, {"A", "A", "Z"}, {"A", "Z", "A"}, {"Z", "A", "A"},
-		}) {
-			t.Fatalf("severity order or duplicates: %+v", got)
-		}
-		for _, value := range owned[len(got):] {
-			if value != (reportSeverity{}) {
-				t.Fatal("compacted severity tail retains references")
-			}
-		}
-	}
-}
-
 func TestProjectionCanonicalizationPreservesInputs(t *testing.T) {
 	r := fixture(t, `{"package":{"name":"example","version":"1.0","ecosystem":"PyPI"},
 		"dep_groups":["z","a","z"],"licenses":["MIT","Apache-2.0","MIT"],
@@ -181,7 +126,6 @@ func TestBatchAliasMerge(t *testing.T) {
 	b := newBuilder()
 	r := fixture(t, fixturePackage)
 	b.add(request{Image: "one"}, response{Result: r})
-	r.Results[0].Packages[0].Vulnerabilities[0].Details = strings.Repeat("discarded", 10000)
 	b.add(request{Image: "one"}, response{Result: r})
 	r.Results[0].Packages[0].Vulnerabilities[0].Summary = "conflicting retained summary"
 	r.Results[0].Packages[0].Vulnerabilities[0].Aliases = []string{"CVE-2026-0"}

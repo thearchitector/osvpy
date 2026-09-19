@@ -17,7 +17,6 @@ from ._native import (
     ReportLicense,
     ReportReference,
     ReportSeverity,
-    ScanMetadata,
     Vulnerability,
 )
 
@@ -46,6 +45,5 @@ __all__ = [
     "ReportLicense",
     "ReportReference",
     "ReportSeverity",
-    "ScanMetadata",
     "Vulnerability",
 ]

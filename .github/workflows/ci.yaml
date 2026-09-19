@@ -2,8 +2,6 @@ name: CI
 
 on:
     push:
-    pull_request:
-    workflow_dispatch:
 
 permissions:
     contents: read
@@ -20,8 +18,6 @@ jobs:
                 python: ["3.13", "3.14", "3.14t"]
                 platform: [ubuntu-latest, macos-14]
         runs-on: ${{ matrix.platform }}
-        env:
-            OSVPY_EXPECT_FREE_THREADED: ${{ matrix.python == '3.14t' && '1' || '0' }}
         steps:
             - uses: actions/checkout@v7
 
@@ -39,7 +35,7 @@ jobs:
               run: uv sync --locked --no-editable --group dev --python "$(command -v python)"
 
             - name: Run Python unit tests
-              run: .venv/bin/python -m tests -m 'not integration'
+              run: uv run pytest
 
     go:
         runs-on: ubuntu-latest

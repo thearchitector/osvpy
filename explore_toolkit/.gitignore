@@ -8,4 +8,6 @@
 !/processes.py
 !/native.py
 !/reports.py
+!/benchmark_memory.py
+!/advisories.py
 !/data/

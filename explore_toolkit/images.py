@@ -7,13 +7,15 @@ import io
 import json
 import tarfile
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
+from threading import Event, Thread
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from threading import Barrier
+    from typing import Literal
 
     from osvpy import RegistryAuth
 
@@ -87,6 +89,7 @@ def serve_registry(
     auth: "RegistryAuth | None" = None,
     status: int | None = None,
     barrier: "Barrier | None" = None,
+    pause: "RegistryPause | None" = None,
 ) -> "Iterator[str]":
     """A real HTTP registry boundary; the scanner and native loader are unmodified."""
     expected_auth = (
@@ -128,6 +131,18 @@ def serve_registry(
             )
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if pause is not None and pause.matches(self.path, body):
+                pause.entered.set()
+                self.connection.settimeout(pause.timeout)
+                try:
+                    disconnected = self.connection.recv(1) == b""
+                except ConnectionResetError:
+                    disconnected = True
+                except TimeoutError:
+                    disconnected = False
+                if disconnected:
+                    pause.disconnected.set()
+                return
             self.wfile.write(body)
 
         def log_message(self, format: str, *args: object) -> None:
@@ -141,3 +156,22 @@ def serve_registry(
         finally:
             server.shutdown()
             thread.join()
+
+
+@dataclass
+class RegistryPause:
+    """Pause a response body and observe admission/disconnection without asserting.
+
+    Pass to serve_registry for cancellation or transport-lifetime experiments.
+    The timeout bounds stalled handlers if a client never disconnects.
+    """
+
+    stage: "Literal['manifest', 'layer']" = "manifest"
+    timeout: float = 10
+    entered: Event = field(default_factory=Event)
+    disconnected: Event = field(default_factory=Event)
+
+    def matches(self, path: str, body: bytes) -> bool:
+        return (self.stage == "manifest" and path.endswith("/manifests/latest")) or (
+            self.stage == "layer" and body.startswith(b"\x1f\x8b")
+        )

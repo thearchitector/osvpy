@@ -36,7 +36,6 @@ local = [
 strict = true
 addopts = "-ra -vv --crap --cov osvpy --import-mode=importlib"
 testpaths = ["tests"]
-markers = ["integration: requires public registry and vulnerability database access"]
 
 [tool.mypy]
 explicit_package_bases = true
