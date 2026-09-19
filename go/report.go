@@ -97,19 +97,26 @@ type reportStore struct {
 	Words                   slabs[uint32]
 }
 
+// uniqueCopy canonicalizes borrowed input without changing its backing array.
+func uniqueCopy(values []string) []string {
+	return unique(slices.Clone(values))
+}
+
+// unique takes ownership of values. Compact clears discarded references; Clip
+// prevents appends through the result from reusing the discarded tail.
 func unique(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
 	slices.Sort(values)
-	return slices.Clone(slices.Compact(values))
+	return slices.Clip(slices.Compact(values))
 }
 
 func canonicalSeverities(values []reportSeverity) []reportSeverity {
 	slices.SortFunc(values, func(a, b reportSeverity) int {
 		return cmp.Or(strings.Compare(a.Type, b.Type), strings.Compare(a.Source, b.Source), strings.Compare(a.Vector, b.Vector))
 	})
-	return slices.Clone(slices.Compact(values))
+	return slices.Clip(slices.Compact(values))
 }
 func timestamp(t *timestamppb.Timestamp) *string {
 	if t == nil {
@@ -122,7 +129,7 @@ func timestamp(t *timestamppb.Timestamp) *string {
 	return &s
 }
 func projectAdvisory(a *osvschema.Vulnerability) reportAdvisory {
-	r := reportAdvisory{ID: a.GetId(), Aliases: unique(slices.Clone(a.GetAliases())), Summary: a.GetSummary(), Modified: timestamp(a.GetModified()), Published: timestamp(a.GetPublished()), Withdrawn: timestamp(a.GetWithdrawn())}
+	r := reportAdvisory{ID: a.GetId(), Aliases: uniqueCopy(a.GetAliases()), Summary: a.GetSummary(), Modified: timestamp(a.GetModified()), Published: timestamp(a.GetPublished()), Withdrawn: timestamp(a.GetWithdrawn())}
 	for _, s := range a.GetSeverity() {
 		r.Severities = append(r.Severities, reportSeverity{s.GetType().String(), s.GetSource().String(), s.GetScore()})
 	}
@@ -134,7 +141,7 @@ func projectAdvisory(a *osvschema.Vulnerability) reportAdvisory {
 	slices.SortFunc(r.References, func(a, b reportReference) int {
 		return cmp.Or(strings.Compare(a.Type, b.Type), strings.Compare(a.URL, b.URL))
 	})
-	r.References = slices.Clone(slices.Compact(r.References))
+	r.References = slices.Clip(slices.Compact(r.References))
 	return r
 }
 

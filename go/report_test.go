@@ -4,9 +4,116 @@ import (
 	"encoding/json"
 	"github.com/google/osv-scanner/v2/pkg/models"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestCanonicalSliceOwnership(t *testing.T) {
+	for _, input := range [][]string{nil, {}, {"one"}, {"z", "a", "z", "a"}} {
+		borrowed := slices.Clone(input)
+		copy := uniqueCopy(borrowed)
+		if !reflect.DeepEqual(borrowed, input) {
+			t.Fatal("borrowed slice mutated")
+		}
+		owned := slices.Clone(input)
+		got := unique(owned)
+		if !reflect.DeepEqual(got, copy) || cap(got) != len(got) {
+			t.Fatalf("canonical result: %#v, %#v", got, copy)
+		}
+		if len(input) == 0 && got != nil {
+			t.Fatal("empty string lists must canonicalize to nil")
+		}
+		if len(got) > 0 {
+			if &got[0] != &owned[0] {
+				t.Fatal("owned values were copied")
+			}
+			copy[0] = "changed"
+			if !reflect.DeepEqual(borrowed, input) {
+				t.Fatal("result shares borrowed storage")
+			}
+		}
+		for _, value := range owned[len(got):] {
+			if value != "" {
+				t.Fatal("compacted string tail retains references")
+			}
+		}
+	}
+	for _, input := range [][]reportSeverity{nil, {}, {{"T", "S", "V"}}, {
+		{"Z", "A", "A"}, {"A", "Z", "A"}, {"A", "A", "Z"},
+		{"A", "A", "A"}, {"A", "A", "Z"},
+	}} {
+		owned := slices.Clone(input)
+		got := canonicalSeverities(owned)
+		if (got == nil) != (input == nil) || cap(got) != len(got) {
+			t.Fatal("severity nil or capacity semantics changed")
+		}
+		if len(got) > 0 && &got[0] != &owned[0] {
+			t.Fatal("owned severities were copied")
+		}
+		if len(input) > 1 && !reflect.DeepEqual(got, []reportSeverity{
+			{"A", "A", "A"}, {"A", "A", "Z"}, {"A", "Z", "A"}, {"Z", "A", "A"},
+		}) {
+			t.Fatalf("severity order or duplicates: %+v", got)
+		}
+		for _, value := range owned[len(got):] {
+			if value != (reportSeverity{}) {
+				t.Fatal("compacted severity tail retains references")
+			}
+		}
+	}
+}
+
+func TestProjectionCanonicalizationPreservesInputs(t *testing.T) {
+	r := fixture(t, `{"package":{"name":"example","version":"1.0","ecosystem":"PyPI"},
+		"dep_groups":["z","a","z"],"licenses":["MIT","Apache-2.0","MIT"],
+		"license_violations":["MIT","Apache-2.0","MIT"],
+		"vulnerabilities":[{"id":"A","aliases":["Z","B","Z"],
+		"severity":[{"type":"CVSS_V3","score":"z"},{"type":"CVSS_V3","score":"a"},{"type":"CVSS_V3","score":"z"}],
+		"references":[{"type":"WEB","url":"z"},{"type":"WEB","url":"a"},{"type":"WEB","url":"z"}]}]}`)
+	// Assign directly so this also exercises the upstream slice's full capacity.
+	r.Results[0].Packages[0].DepGroups = []string{"z", "a", "z"}
+	before, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sink pendingImage
+	projectImage(nil, request{AllPackages: true, AllowedLicenses: []string{}}, response{Result: r}, &sink)
+	a := sink.occurrences[0].findings[0].advisory
+	if !slices.Equal(a.Aliases, []string{"B", "Z"}) || len(a.Severities) != 2 ||
+		a.Severities[0].Vector != "a" || a.Severities[1].Vector != "z" ||
+		!reflect.DeepEqual(a.References, []reportReference{{"WEB", "a"}, {"WEB", "z"}}) {
+		t.Fatalf("advisory canonicalization: %+v", a)
+	}
+	o := sink.occurrences[0]
+	if !slices.Equal(o.context.DependencyGroups, []string{"a", "z"}) ||
+		!slices.Equal(o.license.Licenses, []string{"Apache-2.0", "MIT"}) ||
+		!slices.Equal(o.license.Violations, []string{"Apache-2.0", "MIT"}) {
+		t.Fatalf("occurrence canonicalization: %+v", o)
+	}
+	a.Aliases[0] = "changed"
+	o.context.DependencyGroups[0] = "changed"
+	after, err := json.Marshal(r)
+	if err != nil || string(before) != string(after) {
+		t.Fatal("projection or output mutation changed upstream input")
+	}
+}
+
+func TestAdvisoryCanonicalizationEmptyAndSingleton(t *testing.T) {
+	for _, fields := range []string{"", `,"aliases":[],"severity":[],"references":[]`,
+		`,"aliases":["B"],"severity":[{"type":"CVSS_V3","score":"v"}],"references":[{"type":"WEB","url":"u"}]`} {
+		r := fixture(t, `{"vulnerabilities":[{"id":"A"`+fields+`}]}`)
+		a := projectAdvisory(r.Results[0].Packages[0].Vulnerabilities[0])
+		if strings.Contains(fields, `"B"`) {
+			if !reflect.DeepEqual(a.Aliases, []string{"B"}) || len(a.Severities) != 1 ||
+				a.Severities[0].Vector != "v" || !reflect.DeepEqual(a.References, []reportReference{{"WEB", "u"}}) {
+				t.Fatalf("singleton values: %+v", a)
+			}
+		} else if a.Aliases != nil || a.Severities != nil || a.References != nil {
+			t.Fatalf("empty projected slices must remain nil: %+v", a)
+		}
+	}
+}
 
 func TestAliasesRetainPackageSpecificFixes(t *testing.T) {
 	r := fixture(t, fixturePackage)

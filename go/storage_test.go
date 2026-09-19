@@ -5,10 +5,131 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 	"unsafe"
 )
+
+func TestAliasFinalizationOrdering(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		b := newBuilder()
+		groups := [][]string{
+			{"Z", "CVE-2026-9", "B", "B"},
+			{"CVE-2026-1", "A"}, {"B", "A"},
+			{"zeta", "alpha"}, {"0-singleton"},
+		}
+		if reverse {
+			slices.Reverse(groups)
+		}
+		for _, group := range groups {
+			b.union(group)
+		}
+		// Include every alias as an advisory, including noncanonical CVEs.
+		names := slices.Clone(b.names)
+		for _, name := range names {
+			b.advisory.intern(&b.report.AdvisorySources, b.packAdvisory(reportAdvisory{ID: name}))
+		}
+		r := b.finish()
+		want := []reportVulnerability{
+			{ID: "0-singleton", Aliases: []string{}},
+			{ID: "CVE-2026-1", Aliases: []string{"A", "B", "CVE-2026-9", "Z"}},
+			{ID: "alpha", Aliases: []string{"zeta"}},
+		}
+		if r.Vulnerabilities.Len() != len(want) {
+			t.Fatalf("vulnerability count: %d", r.Vulnerabilities.Len())
+		}
+		for i, v := range want {
+			if got := r.vulnerabilityAt(i); !reflect.DeepEqual(got, v) {
+				t.Fatalf("vulnerability %d: %+v, want %+v", i, got, v)
+			}
+		}
+		for i, name := range names {
+			v := r.vulnerabilityAt(int(*r.AdvisoryVulnerabilities.At(i)))
+			if name != v.ID && !slices.Contains(v.Aliases, name) {
+				t.Fatalf("advisory %q mapped to %+v", name, v)
+			}
+		}
+		if !reflect.DeepEqual(*b, batchBuilder{}) {
+			t.Fatal("builder retains scratch state")
+		}
+	}
+}
+
+func TestLargeAliasFinalization(t *testing.T) {
+	b := newBuilder()
+	const count = 6*slabSize + 17
+	want := make([][]string, 3)
+	for i := count - 1; i >= 0; i-- {
+		name, group := fmt.Sprintf("alias-%06d", i), i%3
+		root := fmt.Sprintf("CVE-2026-%d", group)
+		b.union([]string{name, root, name})
+		b.advisory.intern(&b.report.AdvisorySources, b.packAdvisory(reportAdvisory{ID: name}))
+		want[group] = append(want[group], name)
+	}
+	r := b.finish()
+	if r.Vulnerabilities.Len() != 3 || r.AdvisoryVulnerabilities.Len() != count {
+		t.Fatal("lost aliases or advisory mappings")
+	}
+	for group := range want {
+		slices.Sort(want[group])
+		v := r.vulnerabilityAt(group)
+		if v.ID != fmt.Sprintf("CVE-2026-%d", group) || !slices.Equal(v.Aliases, want[group]) {
+			t.Fatalf("group %d changed across slabs", group)
+		}
+	}
+	for i := range count {
+		if got := *r.AdvisoryVulnerabilities.At(i); got != uint32((count-1-i)%3) {
+			t.Fatalf("advisory %d mapped to %d", i, got)
+		}
+	}
+}
+
+func TestAliasCancellation(t *testing.T) {
+	for _, finish := range []bool{false, true} {
+		t.Run(fmt.Sprint(finish), func(t *testing.T) {
+			b := newBuilder()
+			b.union([]string{"A", "B"})
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			b.ctx = ctx
+			defer func() {
+				if got := recover(); got != context.Canceled {
+					t.Fatalf("got %v, want cancellation", got)
+				}
+			}()
+			if finish {
+				b.finish()
+			} else {
+				b.union([]string{"C", "D"})
+			}
+		})
+	}
+}
+
+// Setup is excluded from timing and allocation counts. For process peak RSS,
+// run a compiled test binary under /usr/bin/time -v with -test.benchtime=1x;
+// that peak includes ingestion, finalization, and allocator-retained pages.
+func BenchmarkFinishLargeAliasUniverse(b *testing.B) {
+	for _, groups := range []int{32, 20000} {
+		b.Run(fmt.Sprintf("groups=%d", groups), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				b.StopTimer()
+				builder := newBuilder()
+				for alias := range 120000 {
+					name := fmt.Sprintf("alias-%06d", alias)
+					builder.union([]string{name, fmt.Sprintf("CVE-2026-%06d", alias%groups)})
+					builder.advisory.intern(&builder.report.AdvisorySources, builder.packAdvisory(reportAdvisory{ID: name}))
+				}
+				b.StartTimer()
+				report := builder.finish()
+				b.StopTimer()
+				runtime.KeepAlive(report)
+			}
+		})
+	}
+}
 
 func TestSlabsStableRowsAndReclaimableSlack(t *testing.T) {
 	var rows slabs[uint32]

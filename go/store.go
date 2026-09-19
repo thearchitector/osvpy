@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"math"
 	"slices"
@@ -35,11 +36,13 @@ type batchBuilder struct {
 	assessment      table[storedAssessment]
 	license         table[storedLicense]
 	fix             table[storedFix]
-	parent          map[string]string
+	aliasID         map[string]uint32
+	names           []string
+	parent          []uint32
 }
 
 func newBuilder() *batchBuilder {
-	return &batchBuilder{report: reportStore{}, parent: map[string]string{}}
+	return &batchBuilder{aliasID: make(map[string]uint32)}
 }
 func checked(v int) uint32 {
 	if v < 0 || uint64(v) > math.MaxUint32 {
@@ -47,16 +50,24 @@ func checked(v int) uint32 {
 	}
 	return uint32(v)
 }
-func (b *batchBuilder) root(id string) string {
-	p, ok := b.parent[id]
-	if !ok {
-		b.parent[id] = id
+func (b *batchBuilder) internAlias(name string) uint32 {
+	if id, ok := b.aliasID[name]; ok {
 		return id
 	}
-	if p != id {
-		b.parent[id] = b.root(p)
+	checked(len(b.names) + 1)
+	id := checked(len(b.names))
+	b.aliasID[name] = id
+	b.names = append(b.names, name)
+	b.parent = append(b.parent, id)
+	return id
+}
+func (b *batchBuilder) root(id uint32) uint32 {
+	// Iterative path halving also handles long chains without growing the stack.
+	for b.parent[id] != id {
+		b.parent[id] = b.parent[b.parent[id]]
+		id = b.parent[id]
 	}
-	return b.parent[id]
+	return id
 }
 func preferred(a, b string) bool {
 	ac, bc := strings.HasPrefix(a, "CVE-"), strings.HasPrefix(b, "CVE-")
@@ -66,10 +77,12 @@ func (b *batchBuilder) union(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
-	a := b.root(ids[0])
+	checkContext(b.ctx)
+	a := b.root(b.internAlias(ids[0]))
 	for _, id := range ids[1:] {
-		c := b.root(id)
-		if preferred(c, a) {
+		checkContext(b.ctx)
+		c := b.root(b.internAlias(id))
+		if preferred(b.names[c], b.names[a]) {
 			a, c = c, a
 		}
 		b.parent[c] = a
@@ -125,7 +138,7 @@ func projectImage(cancelContext context.Context, req request, resp response, sin
 					diagnostic("unsupported_assessment", "Package exploitability signals are not represented")
 				}
 			}
-			ctx := reportContext{Path: source.Source.Path, SourceType: string(source.Source.Type), DependencyGroups: unique(slices.Clone(pkg.DepGroups))}
+			ctx := reportContext{Path: source.Source.Path, SourceType: string(source.Source.Type), DependencyGroups: uniqueCopy(pkg.DepGroups)}
 			if p.Inventory != nil && p.Inventory.Location.PathOrEmpty() != "" {
 				ctx.Path = p.Inventory.Location.PathOrEmpty()
 			}
@@ -278,29 +291,58 @@ func (b *batchBuilder) merge(p pendingImage) {
 	b.report.Images.Append(p.image)
 }
 func (b *batchBuilder) finishAliases() {
-	groups := map[string][]string{}
-	for id := range b.parent {
+	checkContext(b.ctx)
+	counts := make([]uint32, len(b.names))
+	var roots []uint32
+	for id := range b.names {
 		checkContext(b.ctx)
-		root := b.root(id)
-		groups[root] = append(groups[root], id)
+		root := b.root(uint32(id))
+		b.parent[id] = root
+		if counts[root] == 0 {
+			roots = append(roots, root)
+		}
+		counts[root]++ // Total aliases was checked during interning.
 	}
-	roots := make([]string, 0, len(groups))
-	for id := range groups {
-		roots = append(roots, id)
+	slices.SortFunc(roots, func(a, c uint32) int { return cmp.Compare(b.names[a], b.names[c]) })
+	offsets := make([]uint32, len(counts)+1)
+	for id, count := range counts {
+		checkContext(b.ctx)
+		offsets[id+1] = offsets[id] + count
+		counts[id] = offsets[id] // Reuse counts as write cursors.
 	}
-	slices.Sort(roots)
-	ids := map[string]int{}
+	members := make([]uint32, len(b.names))
+	for id, root := range b.parent {
+		checkContext(b.ctx)
+		members[counts[root]] = uint32(id)
+		counts[root]++
+	}
+	vulnerabilityByAlias := make([]uint32, len(b.names))
+	aliases := make([]string, 0)
 	for _, root := range roots {
-		ids[root] = b.report.Vulnerabilities.Len()
-		aliases := unique(groups[root])
-		aliases = slices.DeleteFunc(aliases, func(s string) bool { return s == root })
-		b.report.Vulnerabilities.Append(b.packVulnerability(reportVulnerability{root, aliases}))
+		checkContext(b.ctx)
+		checked(b.report.Vulnerabilities.Len() + 1)
+		vi := checked(b.report.Vulnerabilities.Len())
+		aliases = aliases[:0]
+		for _, id := range members[offsets[root]:offsets[root+1]] {
+			checkContext(b.ctx)
+			vulnerabilityByAlias[id] = vi
+			if id != root {
+				aliases = append(aliases, b.names[id])
+			}
+		}
+		slices.Sort(aliases)
+		b.report.Vulnerabilities.Append(b.packVulnerability(reportVulnerability{b.names[root], aliases}))
+		clear(aliases) // The packed payload owns its strings and words.
 	}
 	for i := 0; i < b.report.AdvisorySources.Len(); i++ {
 		checkContext(b.ctx)
-		vi := ids[b.root(b.report.stringAt(b.report.AdvisorySources.At(i).ID))]
-		b.report.AdvisoryVulnerabilities.Append(checked(vi))
+		var vi uint32
+		if id, ok := b.aliasID[b.report.stringAt(b.report.AdvisorySources.At(i).ID)]; ok {
+			vi = vulnerabilityByAlias[id]
+		}
+		b.report.AdvisoryVulnerabilities.Append(vi)
 	}
+	b.aliasID, b.names, b.parent = nil, nil, nil
 }
 
 func (b *batchBuilder) finish() reportStore {
